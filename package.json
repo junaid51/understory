@@ -14,7 +14,10 @@
     "lint": "eslint .",
     "format": "prettier --check .",
     "test": "vitest run",
-    "test:deep": "UNDERSTORY_DEEP=1 vitest run"
+    "test:deep": "UNDERSTORY_DEEP=1 vitest run",
+    "bench": "NODE_OPTIONS='--expose-gc --max-old-space-size=8192' vite-node bench/src/run.ts",
+    "bench:verdict": "vite-node bench/src/verdict.ts",
+    "verify": "bash scripts/verify.sh"
   },
   "devDependencies": {
     "@types/node": "^22.10.2",
@@ -23,6 +26,7 @@
     "prettier": "^3.4.2",
     "typescript": "^5.7.2",
     "typescript-eslint": "^8.18.1",
+    "vite-node": "^6.0.0",
     "vitest": "^5.0.0"
   }
 }
