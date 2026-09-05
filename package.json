@@ -18,7 +18,9 @@
     "bench": "NODE_OPTIONS='--expose-gc --max-old-space-size=8192' vite-node bench/src/run.ts",
     "bench:verdict": "vite-node bench/src/verdict.ts",
     "verify": "bash scripts/verify.sh",
-    "bench:report": "vite-node bench/src/report.ts"
+    "bench:report": "vite-node bench/src/report.ts",
+    "bench:calibrate": "NODE_OPTIONS='--expose-gc --max-old-space-size=8192' vite-node bench/src/calibrate.ts",
+    "bench:calibrate:report": "vite-node bench/src/calibration-report.ts"
   },
   "devDependencies": {
     "@types/node": "^22.10.2",
