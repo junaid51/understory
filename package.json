@@ -17,7 +17,8 @@
     "test:deep": "UNDERSTORY_DEEP=1 vitest run",
     "bench": "NODE_OPTIONS='--expose-gc --max-old-space-size=8192' vite-node bench/src/run.ts",
     "bench:verdict": "vite-node bench/src/verdict.ts",
-    "verify": "bash scripts/verify.sh"
+    "verify": "bash scripts/verify.sh",
+    "bench:report": "vite-node bench/src/report.ts"
   },
   "devDependencies": {
     "@types/node": "^22.10.2",

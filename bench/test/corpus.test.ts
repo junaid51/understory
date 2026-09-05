@@ -124,6 +124,28 @@ describe('unloaded fraction', () => {
     for (const id of unloaded) expect(store.get(id)?.childCount.kind).toBe('estimated')
   })
 
+  // Regression test for the defect that made the first full benchmark run
+  // meaningless on deep shapes: unloading an ancestor hides its whole subtree,
+  // so on a deep-narrow tree a 5% rate removed all but 32 of 1,000,000 rows.
+  test.each(SHAPES)('unloading never amputates the corpus: %s', (shape) => {
+    const loaded = generate(shape, { nodes: 20_000, seed: 9, unloadedFraction: 0 })
+    const unloaded = generate(shape, { nodes: 20_000, seed: 9, unloadedFraction: 0.05 })
+    const reachable = (store: ReturnType<typeof generate>): number => {
+      let seen = 0
+      const stack = [...store.roots]
+      while (stack.length > 0) {
+        const id = stack.pop()
+        if (id === undefined) break
+        seen += 1
+        for (const child of store.get(id)?.childIds ?? []) stack.push(child)
+      }
+      return seen
+    }
+    const before = reachable(loaded)
+    const after = reachable(unloaded)
+    expect(after / before).toBeGreaterThan(0.9)
+  })
+
   test('changing the unloaded fraction does not change the tree shape', () => {
     const a = generate('balanced', { nodes: 2_000, seed: 5, unloadedFraction: 0 })
     const b = generate('balanced', { nodes: 2_000, seed: 5, unloadedFraction: 0.5 })

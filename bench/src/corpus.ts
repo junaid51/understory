@@ -25,11 +25,32 @@ export interface CorpusOptions {
   readonly nodes: number
   readonly seed: number
   /**
-   * Fraction of nodes that have children but whose children are marked unloaded,
-   * so their span is an estimate rather than a fact. This is how M0 exercises the
+   * Fraction of eligible nodes whose children are marked unloaded, so their span
+   * is an estimate rather than a fact. This is how M0 exercises the
    * estimated-count path without a source adapter existing yet.
    */
   readonly unloadedFraction?: number
+  /**
+   * A node is only eligible to be marked unloaded if its subtree is no larger
+   * than this.
+   *
+   * Without the cap, unloading amputates the corpus on deep shapes: an unloaded
+   * node hides everything beneath it, and in a chain of depth 64 a 5% rate means
+   * only 0.95^64, under 4%, of chains survive intact. The first full benchmark
+   * run measured deep-narrow at one million nodes as a THIRTY-TWO row tree and
+   * reported it as passing every threshold. It had not passed; it had not been
+   * tested. The cap keeps the visible index space close to the requested node
+   * count while still producing estimated spans.
+   *
+   * Measured at 200,000 nodes with a 5% fraction: a cap of 8 keeps every shape
+   * at 93.8% of its nodes reachable or better, against 83.7% at a cap of 32.
+   *
+   * Known limitation of the cap: on shallow-wide and mega-sibling every node
+   * with children owns a huge subtree, so nothing is eligible and the estimated
+   * span path is not exercised on those two shapes at all. That is inherent to
+   * the shapes rather than to the cap, and it is stated rather than hidden.
+   */
+  readonly maxHiddenSubtree?: number
 }
 
 interface ShapeSpec {
@@ -121,6 +142,20 @@ function buildStructure(shape: ShapeName, opts: CorpusOptions): Built {
 export function generate(shape: ShapeName, opts: CorpusOptions): MapTreeStore {
   const { roots, records, order } = buildStructure(shape, opts)
   const unloadedFraction = opts.unloadedFraction ?? 0
+  const maxHiddenSubtree = opts.maxHiddenSubtree ?? 8
+
+  // Subtree sizes, accumulated in reverse creation order. A child is always
+  // created after its parent, so one reverse pass is enough.
+  const subtreeSize = new Map<NodeId, number>()
+  for (let i = order.length - 1; i >= 0; i--) {
+    const id = order[i]
+    if (id === undefined) continue
+    const record = records.get(id)
+    if (record === undefined) continue
+    let size = 1
+    for (const child of record.children) size += subtreeSize.get(child) ?? 1
+    subtreeSize.set(id, size)
+  }
   // A separate stream from the structure rng, so changing the unloaded fraction
   // does not change the tree's shape.
   const rng = mulberry32(opts.seed ^ 0x5f5f5f5f)
@@ -132,7 +167,8 @@ export function generate(shape: ShapeName, opts: CorpusOptions): MapTreeStore {
     const siblings =
       record.parentId === null ? roots : (records.get(record.parentId)?.children ?? [])
     const slot = siblings.indexOf(id)
-    const unloaded = record.children.length > 0 && rng() < unloadedFraction
+    const eligible = record.children.length > 0 && (subtreeSize.get(id) ?? 1) <= maxHiddenSubtree
+    const unloaded = eligible && rng() < unloadedFraction
     nodes.set(id, {
       id,
       parentId: record.parentId,
