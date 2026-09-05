@@ -172,6 +172,8 @@ export class FaultyProjection implements Projection {
   expandedIds(): ReadonlySet<NodeId> {
     return new Set(this.expanded)
   }
+
+  invalidate(): void {}
 }
 
 export const faultyFactory =

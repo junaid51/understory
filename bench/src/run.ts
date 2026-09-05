@@ -1,7 +1,13 @@
 import { execSync } from 'node:child_process'
 import { mkdirSync, writeFileSync } from 'node:fs'
 import { cpus, totalmem } from 'node:os'
-import { MaterializedProjection, approximate } from '@understory/core'
+import {
+  MaterializedProjection,
+  SpanProjection,
+  approximate,
+  type Projection,
+  type TreeStore,
+} from '@understory/core'
 import { SHAPES, generate, type ShapeName } from './corpus.js'
 import { collectGarbage, controlWorkload, measure, retainedHeap } from './harness.js'
 import { SCENARIOS, analyse } from './scenarios.js'
@@ -12,6 +18,14 @@ const SIZES = (process.env['UNDERSTORY_SIZES'] ?? '1000,10000,100000,1000000')
 const SHAPE_FILTER = process.env['UNDERSTORY_SHAPES']?.split(',') as ShapeName[] | undefined
 const SHAPE_LIST = SHAPE_FILTER ?? SHAPES
 const UNLOADED_FRACTION = Number(process.env['UNDERSTORY_UNLOADED'] ?? '0.05')
+const IMPL = process.env['UNDERSTORY_IMPL'] ?? 'materialized'
+const FACTORIES: Record<string, (store: TreeStore) => Projection> = {
+  materialized: (store) => new MaterializedProjection(store),
+  span: (store) => new SpanProjection(store),
+}
+const factory = FACTORIES[IMPL]
+if (factory === undefined) throw new Error(`unknown implementation ${IMPL}`)
+const make: (store: TreeStore) => Projection = factory
 
 interface Measurement {
   readonly shape: ShapeName
@@ -56,7 +70,7 @@ function writeSnapshot(
 ): void {
   const isCi = process.env['CI'] === 'true'
   const result = {
-    implementation: 'materialized',
+    implementation: IMPL,
     commit: gitSha(),
     started,
     finished: new Date().toISOString(),
@@ -78,7 +92,7 @@ function writeSnapshot(
   }
   mkdirSync('bench/results', { recursive: true })
   if (snapshotPath === '') {
-    snapshotPath = `bench/results/materialized-${isCi ? 'ci' : 'local'}-${started.slice(0, 10)}.json`
+    snapshotPath = `bench/results/${IMPL}-${isCi ? 'ci' : 'local'}-${started.slice(0, 10)}.json`
   }
   writeFileSync(snapshotPath, `${JSON.stringify(result, null, 2)}\n`)
 }
@@ -97,10 +111,10 @@ function main(): void {
       const before = retainedHeap()
       const store = generate(shape, { nodes, seed: 42, unloadedFraction: UNLOADED_FRACTION })
       const storeBytes = retainedHeap() - before
-      const ctx = analyse(store)
+      const ctx = analyse(store, make)
 
       const heapBefore = retainedHeap()
-      const projection = new MaterializedProjection(store)
+      const projection = make(store)
       for (const id of ctx.ids) projection.expand(id)
       const rows = approximate(projection.count())
       const projectionBytes = retainedHeap() - heapBefore

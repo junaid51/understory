@@ -102,6 +102,9 @@ export class OracleProjection implements Projection {
   expandedIds(): ReadonlySet<NodeId> {
     return new Set(this.expanded)
   }
+
+  /** Nothing to do: every call already rebuilds from the store. */
+  invalidate(): void {}
 }
 
 export const oracleFactory = (

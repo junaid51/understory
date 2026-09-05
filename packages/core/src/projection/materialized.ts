@@ -240,7 +240,11 @@ export class MaterializedProjection implements Projection {
     return new Set(this.expanded)
   }
 
-  /** Marks the row table stale. For sources that mutate the store underneath. */
+  /**
+   * Marks the whole row table stale. The node id is accepted and ignored: this
+   * implementation has no way to refresh part of a table it rebuilds entirely,
+   * and pretending otherwise would flatter it.
+   */
   invalidate(): void {
     this.dirty = true
   }

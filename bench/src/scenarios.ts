@@ -1,17 +1,13 @@
-import {
-  MaterializedProjection,
-  approximate,
-  exact,
-  type NodeId,
-  type NodeRecord,
-  type Projection,
-} from '@understory/core'
-import type { MapTreeStore } from '@understory/core'
+import { approximate, exact, type NodeId, type NodeRecord, type Projection } from '@understory/core'
+import type { MapTreeStore, TreeStore } from '@understory/core'
 import { MutableTreeStore } from './mutable-store.js'
 
 const WINDOW = 100
 
 export interface ScenarioContext {
+  /** Builds the implementation under test. Every scenario goes through this,
+   *  so all implementations run identical workloads over identical corpora. */
+  readonly make: (store: TreeStore) => Projection
   readonly store: MapTreeStore
   readonly ids: readonly NodeId[]
   /** Nodes with children, by descending child count. */
@@ -36,7 +32,10 @@ export interface Scenario {
   prepare(ctx: ScenarioContext): (i: number) => void
 }
 
-export function analyse(store: MapTreeStore): ScenarioContext {
+export function analyse(
+  store: MapTreeStore,
+  make: (store: TreeStore) => Projection,
+): ScenarioContext {
   const ids = [...store.entries()].map(([id]) => id)
   const depthByNode = new Map<NodeId, number>()
   const stack: { id: NodeId; depth: number }[] = store.roots.map((id) => ({ id, depth: 0 }))
@@ -69,7 +68,7 @@ export function analyse(store: MapTreeStore): ScenarioContext {
   const branchy = ids
     .filter((id) => (store.get(id)?.childIds?.length ?? 0) > 0)
     .sort((a, b) => (store.get(b)?.childIds?.length ?? 0) - (store.get(a)?.childIds?.length ?? 0))
-  return { store, ids, branchy, depthByNode, deepestPath: deepest }
+  return { make, store, ids, branchy, depthByNode, deepestPath: deepest }
 }
 
 const expandAll = (projection: Projection, ids: readonly NodeId[]): void => {
@@ -97,7 +96,7 @@ export const SCENARIOS: readonly Scenario[] = [
     samplesAtMillion: 5,
     note: 'cold build with every node expanded. Supplementary: no pre-registered threshold',
     prepare: (ctx) => () => {
-      const projection = new MaterializedProjection(ctx.store)
+      const projection = ctx.make(ctx.store)
       expandAll(projection, ctx.ids)
       read(projection)
     },
@@ -110,7 +109,7 @@ export const SCENARIOS: readonly Scenario[] = [
     prepare: (ctx) => {
       const opening = ctx.ids.filter((id) => (ctx.depthByNode.get(id) ?? 99) <= 1)
       return () => {
-        const projection = new MaterializedProjection(ctx.store)
+        const projection = ctx.make(ctx.store)
         for (const id of opening) projection.expand(id)
         read(projection)
       }
@@ -121,7 +120,7 @@ export const SCENARIOS: readonly Scenario[] = [
     samples: 120,
     note: 'toggle a node at depth 1, then read',
     prepare: (ctx) => {
-      const projection = new MaterializedProjection(ctx.store)
+      const projection = ctx.make(ctx.store)
       expandAll(projection, ctx.ids)
       read(projection)
       const target =
@@ -141,7 +140,7 @@ export const SCENARIOS: readonly Scenario[] = [
     samples: 120,
     note: 'toggle the deepest branchy node, then read',
     prepare: (ctx) => {
-      const projection = new MaterializedProjection(ctx.store)
+      const projection = ctx.make(ctx.store)
       expandAll(projection, ctx.ids)
       read(projection)
       const deep = [...ctx.branchy].sort(
@@ -164,7 +163,7 @@ export const SCENARIOS: readonly Scenario[] = [
     prepare: (ctx) => {
       const path = ctx.deepestPath
       return () => {
-        const projection = new MaterializedProjection(ctx.store)
+        const projection = ctx.make(ctx.store)
         for (const id of path) {
           projection.expand(id)
           read(projection)
@@ -186,7 +185,7 @@ export const SCENARIOS: readonly Scenario[] = [
         cursor = ctx.store.get(cursor)?.parentId ?? null
       }
       return () => {
-        const projection = new MaterializedProjection(ctx.store)
+        const projection = ctx.make(ctx.store)
         for (const id of ancestors) projection.expand(id)
         read(projection)
         if (target !== undefined) projection.expand(target)
@@ -200,7 +199,7 @@ export const SCENARIOS: readonly Scenario[] = [
     batch: 1000,
     note: 'uniform random index lookups, timed in batches of 1000',
     prepare: (ctx) => {
-      const projection = new MaterializedProjection(ctx.store)
+      const projection = ctx.make(ctx.store)
       expandAll(projection, ctx.ids)
       const total = approximate(projection.count())
       let seed = 1
@@ -218,7 +217,7 @@ export const SCENARIOS: readonly Scenario[] = [
     samplesAtMillion: 200, // cheap per sample; 200 still resolves p99
     note: 'one 100-row window, advancing through the space',
     prepare: (ctx) => {
-      const projection = new MaterializedProjection(ctx.store)
+      const projection = ctx.make(ctx.store)
       expandAll(projection, ctx.ids)
       const total = approximate(projection.count())
       const step = Math.max(1, Math.floor(total / 400))
@@ -234,7 +233,7 @@ export const SCENARIOS: readonly Scenario[] = [
     samplesAtMillion: 200, // cheap per sample
     note: 'back and forth over the same region',
     prepare: (ctx) => {
-      const projection = new MaterializedProjection(ctx.store)
+      const projection = ctx.make(ctx.store)
       expandAll(projection, ctx.ids)
       const total = approximate(projection.count())
       const anchor = Math.floor(total / 2)
@@ -250,7 +249,7 @@ export const SCENARIOS: readonly Scenario[] = [
     samplesAtMillion: 200, // cheap per sample
     note: 'window positions chosen at random, as from a scrollbar drag',
     prepare: (ctx) => {
-      const projection = new MaterializedProjection(ctx.store)
+      const projection = ctx.make(ctx.store)
       expandAll(projection, ctx.ids)
       const total = approximate(projection.count())
       let seed = 7
@@ -267,7 +266,7 @@ export const SCENARIOS: readonly Scenario[] = [
     note: 'add and remove a child under an expanded ancestor, then read',
     prepare: (ctx) => {
       const mutable = MutableTreeStore.from(ctx.store)
-      const projection = new MaterializedProjection(mutable)
+      const projection = ctx.make(mutable)
       expandAll(projection, ctx.ids)
       read(projection)
       const parentId = ctx.branchy[Math.floor(ctx.branchy.length / 2)] ?? ctx.branchy[0]
@@ -283,7 +282,7 @@ export const SCENARIOS: readonly Scenario[] = [
           childCount: exact(children.length),
         }
         mutable.set(record)
-        projection.invalidate()
+        projection.invalidate(parentId)
         read(projection)
       }
     },
@@ -295,7 +294,7 @@ export const SCENARIOS: readonly Scenario[] = [
     note: 'an unloaded node receives its real children, replacing an estimate',
     prepare: (ctx) => {
       const mutable = MutableTreeStore.from(ctx.store)
-      const projection = new MaterializedProjection(mutable)
+      const projection = ctx.make(mutable)
       expandAll(projection, ctx.ids)
       read(projection)
       const parentId = ctx.branchy[0]
@@ -311,7 +310,7 @@ export const SCENARIOS: readonly Scenario[] = [
               }
             : loaded
         mutable.set(record)
-        projection.invalidate()
+        projection.invalidate(parentId)
         read(projection)
       }
     },
