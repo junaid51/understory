@@ -1,6 +1,13 @@
 import { approximate, type NodeId } from '@understory/core'
 import { describe, expect, test } from 'vitest'
-import { SHAPES, allIds, generate, structureHash, type ShapeName } from '../src/index.js'
+import {
+  SHAPES,
+  allIds,
+  generate,
+  inspectTopology,
+  structureHash,
+  type ShapeName,
+} from '../src/index.js'
 import hashes from './__fixtures__/corpus-hashes.json' with { type: 'json' }
 
 const SIZES = [1_000, 10_000] as const
@@ -80,6 +87,34 @@ describe.each(SHAPES)('%s', (shape) => {
   test('structure hash matches the committed fixture', () => {
     const store = generate(shape, { nodes: 5_000, seed: 42 })
     expect(structureHash(store)).toBe((hashes as Record<string, string>)[shape])
+  })
+})
+
+/**
+ * The corpus must be the shape it claims to be.
+ *
+ * Two defects reached committed benchmark results before anyone noticed. The
+ * unloaded fraction reduced deep-narrow at a million nodes to a 32-row tree. And
+ * shallow-wide at a million nodes silently became 437,659 roots, 43.8% of the
+ * corpus, because its depth cap could not hold that many nodes at its fan-out and
+ * the leftovers were appended as synthetic roots. Both produced entirely
+ * plausible numbers for a corpus nobody intended.
+ *
+ * These assertions make that class of failure loud.
+ */
+describe.each(SHAPES)('topology integrity: %s', (shape) => {
+  test.each([1_000, 20_000, 100_000])('at %i nodes', (nodes) => {
+    const report = inspectTopology(generate(shape, { nodes, seed: 42 }), shape)
+
+    // Exactly one root. Frontier exhaustion must never invent more.
+    expect(report.roots).toBe(1)
+
+    // No orphans: every generated node is reachable from that root.
+    expect(report.reachable).toBe(nodes)
+    expect(report.nodes).toBe(nodes)
+
+    // The shape's own depth contract.
+    expect(report.maxDepth).toBeLessThanOrEqual(report.declaredMaxDepth)
   })
 })
 

@@ -112,14 +112,60 @@ function buildStructure(shape: ShapeName, opts: CorpusOptions): Built {
   remaining -= 1
 
   const frontier: NodeId[] = [first]
-  while (remaining > 0 && frontier.length > 0) {
+  // Forward cursor into `order`, used to widen already-created nodes when the
+  // frontier runs dry. A cursor rather than a filter because re-scanning the
+  // whole node list on every exhaustion is O(n^2), and sparse-unbalanced empties
+  // its frontier constantly: three quarters of its nodes are given no children.
+  let reserve = 0
+  // Once the frontier has been exhausted once, refilled parents are guaranteed at
+  // least one child. Without that, sparse-unbalanced spins forever: three
+  // quarters of its nodes draw a fan-out of zero to two, so a refill can hand out
+  // four thousand parents and place nothing, drain, and refill again with the
+  // budget untouched. Widening only engages when the shape cannot otherwise hold
+  // the requested node count, and it is preferable to the alternative, which was
+  // silently emitting a different topology.
+  let widening = false
+  while (remaining > 0) {
+    if (frontier.length === 0) {
+      // The frontier is exhausted but budget remains, because this shape's depth
+      // cap cannot hold the requested node count at its natural fan-out.
+      //
+      // The previous version appended the leftovers as extra ROOTS. That silently
+      // turned shallow-wide at one million nodes into 437,659 roots, 43.8% of the
+      // corpus, and every benchmark on that shape was then measuring a corpus
+      // nothing in the project intended. It was found only because a projection
+      // scanned an 80,000-long sibling list.
+      //
+      // Widening existing nodes instead keeps the topology the shape claims: one
+      // root, the same depth bound, more children per node.
+      widening = true
+      let added = 0
+      let scanned = 0
+      while (added < 4096 && scanned < order.length) {
+        if (reserve >= order.length) reserve = 0
+        const candidate = order[reserve]
+        reserve += 1
+        scanned += 1
+        if (candidate === undefined) continue
+        if ((records.get(candidate)?.depth ?? Number.POSITIVE_INFINITY) < spec.maxDepth) {
+          frontier.push(candidate)
+          added += 1
+        }
+      }
+      if (added === 0) {
+        throw new Error(
+          `${shape}: cannot place ${remaining} more nodes within maxDepth ${spec.maxDepth}`,
+        )
+      }
+    }
     const parent = spec.order === 'bfs' ? frontier.shift() : frontier.pop()
-    if (parent === undefined) break
+    if (parent === undefined) continue
     const record = records.get(parent)
-    if (record === undefined) break
+    if (record === undefined) continue
     if (record.depth >= spec.maxDepth) continue
 
-    const wanted = spec.fanOut(rng, record.depth)
+    const drawn = spec.fanOut(rng, record.depth)
+    const wanted = widening ? Math.max(1, drawn) : drawn
     const k = Math.min(wanted, remaining)
     for (let i = 0; i < k; i++) {
       const child = create(parent, record.depth + 1)
@@ -127,13 +173,6 @@ function buildStructure(shape: ShapeName, opts: CorpusOptions): Built {
       frontier.push(child)
     }
     remaining -= k
-  }
-
-  // Only reachable if every eligible parent hit maxDepth with budget left. Extra
-  // roots keep the node count exact rather than silently producing a smaller tree.
-  while (remaining > 0) {
-    roots.push(create(null, 0))
-    remaining -= 1
   }
 
   return { roots, records, order }
@@ -160,13 +199,27 @@ export function generate(shape: ShapeName, opts: CorpusOptions): MapTreeStore {
   // does not change the tree's shape.
   const rng = mulberry32(opts.seed ^ 0x5f5f5f5f)
 
+  // Sibling slots, assigned in one pass. The previous version called
+  // siblings.indexOf(id) for every node, which is O(n^2) on mega-sibling where a
+  // single parent owns every other node, and dominated corpus build time: 6.6s
+  // to generate 100,000 nodes, against 25ms for the structure itself.
+  const slotOf = new Map<NodeId, number>()
+  for (let k = 0; k < roots.length; k++) {
+    const rootId = roots[k]
+    if (rootId !== undefined) slotOf.set(rootId, k)
+  }
+  for (const [, parentRecord] of records) {
+    for (let k = 0; k < parentRecord.children.length; k++) {
+      const child = parentRecord.children[k]
+      if (child !== undefined) slotOf.set(child, k)
+    }
+  }
+
   const nodes = new Map<NodeId, NodeRecord>()
   for (const id of order) {
     const record = records.get(id)
     if (record === undefined) continue
-    const siblings =
-      record.parentId === null ? roots : (records.get(record.parentId)?.children ?? [])
-    const slot = siblings.indexOf(id)
+    const slot = slotOf.get(id) ?? 0
     const eligible = record.children.length > 0 && (subtreeSize.get(id) ?? 1) <= maxHiddenSubtree
     const unloaded = eligible && rng() < unloadedFraction
     nodes.set(id, {
@@ -178,6 +231,47 @@ export function generate(shape: ShapeName, opts: CorpusOptions): MapTreeStore {
     })
   }
   return new MapTreeStore(roots, nodes)
+}
+
+export interface TopologyReport {
+  readonly roots: number
+  readonly nodes: number
+  readonly reachable: number
+  readonly maxDepth: number
+  readonly maxFanOut: number
+  readonly declaredMaxDepth: number
+}
+
+/**
+ * Checks that a generated corpus is the shape it claims to be.
+ *
+ * This exists because two corpus defects reached committed benchmark results
+ * before anyone noticed: deep-narrow at 1M was reduced to a 32-row tree by the
+ * unloaded fraction, and shallow-wide at 1M silently became 437,659 roots. Both
+ * produced plausible-looking numbers for a corpus nobody intended.
+ */
+export function inspectTopology(store: MapTreeStore, shape: ShapeName): TopologyReport {
+  let reachable = 0
+  let maxDepth = 0
+  let maxFanOut = 0
+  const stack: { id: NodeId; depth: number }[] = store.roots.map((id) => ({ id, depth: 0 }))
+  while (stack.length > 0) {
+    const entry = stack.pop()
+    if (entry === undefined) break
+    reachable += 1
+    if (entry.depth > maxDepth) maxDepth = entry.depth
+    const children = store.get(entry.id)?.childIds ?? []
+    if (children.length > maxFanOut) maxFanOut = children.length
+    for (const child of children) stack.push({ id: child, depth: entry.depth + 1 })
+  }
+  return {
+    roots: store.roots.length,
+    nodes: store.size,
+    reachable,
+    maxDepth,
+    maxFanOut,
+    declaredMaxDepth: SPECS[shape].maxDepth,
+  }
 }
 
 /** Every node id in the corpus, in creation order. Deterministic. */
