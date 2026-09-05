@@ -64,7 +64,23 @@ export class SpanProjection implements Projection {
   /** Estimated child count, for expanded-but-unloaded nodes. */
   private estCount: Int32Array
   private flags: Uint8Array
-  private childList: (Int32Array | undefined)[] = [undefined]
+  /**
+   * Every node's child list, packed end to end in one array.
+   *
+   * The first version held one `Int32Array` per node inside a JavaScript array a
+   * million entries long. A random descent then chased a pointer into a cold
+   * million-entry array and again into a separate small heap object, once per
+   * level, and the million object headers dominated the heap. See
+   * docs/experiments/0001-packed-child-lists.md for the measurement.
+   *
+   * Regions are bump-allocated and never reclaimed: re-materialising a node with
+   * a different fan-out leaves its old region as fragmentation. Acceptable at M0,
+   * recorded rather than solved speculatively.
+   */
+  private childData: Int32Array
+  private childStart: Int32Array
+  private childLen: Int32Array
+  private childTop = 0
 
   constructor(
     private readonly store: TreeStore,
@@ -78,6 +94,9 @@ export class SpanProjection implements Projection {
     this.nonUnit = new Int32Array(capacity)
     this.estCount = new Int32Array(capacity)
     this.flags = new Uint8Array(capacity)
+    this.childStart = new Int32Array(capacity).fill(-1)
+    this.childLen = new Int32Array(capacity)
+    this.childData = new Int32Array(capacity)
     this.parent[VROOT] = -1
     this.flags[VROOT] = EXPANDED
     for (const id of initiallyExpanded) this.expand(id)
@@ -100,9 +119,28 @@ export class SpanProjection implements Projection {
     this.phSum = grow32(this.phSum)
     this.nonUnit = grow32(this.nonUnit)
     this.estCount = grow32(this.estCount)
+    const startNext = new Int32Array(capacity).fill(-1)
+    startNext.set(this.childStart)
+    this.childStart = startNext
+    this.childLen = grow32(this.childLen)
     const flags = new Uint8Array(capacity)
     flags.set(this.flags)
     this.flags = flags
+  }
+
+  /** Bump-allocates a contiguous region of `length` child slots. */
+  private allocateChildren(length: number): number {
+    const needed = this.childTop + length
+    if (needed > this.childData.length) {
+      let capacity = this.childData.length
+      while (capacity < needed) capacity *= 2
+      const next = new Int32Array(capacity)
+      next.set(this.childData)
+      this.childData = next
+    }
+    const start = this.childTop
+    this.childTop += length
+    return start
   }
 
   private idOf(index: number): NodeId {
@@ -159,7 +197,9 @@ export class SpanProjection implements Projection {
       list = node.childIds
     }
 
-    const arr = new Int32Array(list.length)
+    const start = this.allocateChildren(list.length)
+    this.childStart[index] = start
+    this.childLen[index] = list.length
     let sum = 0
     let placeholders = 0
     let wide = 0
@@ -171,7 +211,6 @@ export class SpanProjection implements Projection {
         childIndex = this.ids.length
         this.grow(childIndex + 1)
         this.ids.push(childId)
-        this.childList.push(undefined)
         this.indexById.set(childId, childIndex)
         this.childSum[childIndex] = 0
         this.phSum[childIndex] = 0
@@ -181,13 +220,12 @@ export class SpanProjection implements Projection {
       }
       this.parent[childIndex] = index
       this.slot[childIndex] = k
-      arr[k] = childIndex
+      this.childData[start + k] = childIndex
       const span = this.spanOf(childIndex)
       sum += span
       placeholders += this.phOf(childIndex)
       if (span > 1) wide += 1
     }
-    this.childList[index] = arr
     this.childSum[index] = sum
     this.phSum[index] = placeholders
     this.nonUnit[index] = wide
@@ -275,14 +313,16 @@ export class SpanProjection implements Projection {
         return { kind: 'placeholder', index, parentId: this.idOf(node), depth, slot: offset }
       }
 
-      const children = this.childList[node]
-      if (children === undefined || children.length === 0) return undefined
+      const start = this.childStart[node] ?? -1
+      const length = this.childLen[node] ?? 0
+      if (start < 0 || length === 0) return undefined
 
       let childIndex: number
       if ((this.nonUnit[node] ?? 0) === 0) {
         // Every child occupies exactly one row, so the child owning this offset
         // is that offset. This is the O(1) step described in the header.
-        childIndex = children[offset] ?? -1
+        if (offset >= length) return undefined
+        childIndex = this.childData[start + offset] ?? -1
         if (childIndex < 0) return undefined
         return {
           kind: 'node',
@@ -295,8 +335,8 @@ export class SpanProjection implements Projection {
 
       let cursor = 0
       let chosen = -1
-      for (let k = 0; k < children.length; k++) {
-        const candidate = children[k] ?? -1
+      for (let k = 0; k < length; k++) {
+        const candidate = this.childData[start + k] ?? -1
         const span = this.spanOf(candidate)
         if (offset < cursor + span) {
           chosen = candidate
@@ -398,7 +438,8 @@ export class SpanProjection implements Projection {
     const oldSpan = this.spanOf(index)
     const oldPh = this.phOf(index)
     this.flags[index] = (this.flags[index] ?? 0) & ~(MATERIALIZED | UNLOADED)
-    this.childList[index] = undefined
+    this.childStart[index] = -1
+    this.childLen[index] = 0
     this.childSum[index] = 0
     this.phSum[index] = 0
     this.nonUnit[index] = 0
