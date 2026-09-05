@@ -1,0 +1,78 @@
+{
+  "preRegisteredOn": "2026-09-05",
+  "preRegisteredBefore": "any measurement at 1M nodes, and before the span implementation exists",
+  "note": "Transcribed from the approved Phase 4 plan. These are the values the author was willing to be held to in advance. Moving a number in this file after seeing a result invalidates the experiment, and the git history is the evidence that it was not done.",
+  "scale": {
+    "nodes": 1000000,
+    "rule": "the baseline must satisfy every threshold on every shape to trigger REVERSE"
+  },
+  "baselineMustSatisfy": [
+    {
+      "scenario": "initial-projection",
+      "stat": "p99Ms",
+      "max": 250,
+      "unit": "ms",
+      "rationale": "one-time cost behind a loading state, so generous"
+    },
+    {
+      "scenario": "expand-collapse-shallow",
+      "stat": "p99Ms",
+      "max": 4,
+      "unit": "ms",
+      "rationale": "must leave the rest of a 16.7ms frame for the renderer"
+    },
+    {
+      "scenario": "expand-collapse-deep",
+      "stat": "p99Ms",
+      "max": 4,
+      "unit": "ms",
+      "rationale": "same frame argument at depth"
+    },
+    {
+      "scenario": "subtree-size-change",
+      "stat": "p99Ms",
+      "max": 4,
+      "unit": "ms",
+      "rationale": "same frame argument; this is the live-update path M2 depends on"
+    },
+    {
+      "scenario": "resolve-random",
+      "stat": "perOpP99Us",
+      "max": 50,
+      "unit": "us",
+      "rationale": "called up to a few hundred times per frame",
+      "caveat": "timed in batches of 1000, so this is a batch p99 divided by the batch size, not a true per-call p99"
+    },
+    {
+      "scenario": "scroll-sequential",
+      "stat": "p99Ms",
+      "max": 1,
+      "unit": "ms",
+      "rationale": "per 100-row window"
+    }
+  ],
+  "heap": {
+    "maxProjectionToStoreRatio": 1.5,
+    "rationale": "projection overhead should not dominate the data it projects"
+  },
+  "spanMustImproveBreachedMetricsBy": {
+    "factor": 3,
+    "stat": "p99",
+    "rationale": "a 20% win does not pay for a second data structure, its invariants and its bugs"
+  },
+  "spanRegressionMustBeReported": {
+    "scenarios": ["resolve-random", "scroll-sequential"],
+    "factor": 2,
+    "rationale": "faster at restructuring and slower at reading is a trade-off, not an improvement, and must appear in the README next to the wins"
+  },
+  "shapeClassification": {
+    "pathological": ["mega-sibling", "shallow-wide", "deep-narrow"],
+    "common": ["balanced", "sparse-unbalanced", "monorepo"],
+    "rationale": "breaches confined to pathological shapes produce NARROW rather than CONFIRM"
+  },
+  "outcomes": {
+    "REVERSE": "baseline satisfies every threshold on every shape; the span tree is never written and ADR-0002 is withdrawn",
+    "CONFIRM": "baseline breaches on the majority of shapes and the span tree improves each breached metric by at least 3x at p99",
+    "NARROW": "breaches confined to pathological shapes; the span tree ships and the materialized projection stays as a documented selectable mode"
+  }
+}
