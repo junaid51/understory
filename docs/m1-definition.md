@@ -149,9 +149,10 @@ core stays DOM-free and deterministic.
 
 ## 5. Invariants that must hold after arbitrary sequences
 
-M0's fifteen structural invariants continue to apply unchanged. M1 adds ten, and
-the property suite generates sequences mixing expand, collapse, viewport movement,
-page arrival, out-of-order arrival, invalidation, count correction and eviction.
+M0's fifteen structural invariants continue to apply unchanged. M1 adds eleven,
+and the property suite generates sequences mixing expand, collapse, viewport
+movement, page arrival, out-of-order arrival, invalidation, count correction and
+eviction.
 
 |     | Invariant                                                                                                |
 | --- | -------------------------------------------------------------------------------------------------------- |
@@ -165,9 +166,22 @@ page arrival, out-of-order arrival, invalidation, count correction and eviction.
 | N8  | Out-of-order arrival produces the same final state as in-order arrival.                                  |
 | N9  | `count()` is `exact` only when every visible parent is exhausted or source-counted; otherwise `atLeast`. |
 | N10 | Evicting a parent and returning to it reproduces the identical row sequence.                             |
+| N11 | If demand keeps asking for a reachable page and the source keeps answering it, the request settles.      |
 
 N8 and N10 are the two most valuable properties here, because both describe
 failures that are invisible in ordinary use and appear only under latency.
+
+N1 to N10 are safety properties: each says that nothing bad is in the state. None
+of them can see a system that never progresses, which fault injection in commit 6
+demonstrated concretely, so **N11 is the one liveness property**. It is checked as
+a bounded-round settle against the deterministic in-memory source, with no timers
+and no general liveness machinery.
+
+Bookkeeping note, commit 8: acceptance criterion A7 in `bench/thresholds.m1.json`
+was pre-registered against "I1-I15 and N1-N11" while this section defined only
+N1 to N10. N11 was named by the criteria and never defined. Commit 8 supplies the
+missing definition rather than narrowing A7 to N1-N10, which is the direction that
+strengthens the gate rather than weakening it.
 
 ## 6. Benchmark workloads
 
@@ -312,3 +326,75 @@ from an untested one.
 
 The budget itself, its derivation and the full acceptance criteria are in
 [docs/m1-budget.md](m1-budget.md) and `bench/thresholds.m1.json`.
+
+---
+
+## Addendum, M1 commit 8: eviction semantics and two definitional findings
+
+### What eviction does
+
+`BudgetEvictor.sweep(viewport)` runs after every interaction, not only when over
+budget, because the marks it records are what make the later choice meaningful.
+Four steps: compute the protected set, mark it as recently used, take the least
+recently used parent outside it, `invalidate` it. Repeat until rows are within
+`B`. Demand refills whatever returns to view.
+
+**Protection.** A row inside the window is destroyed by discarding any of its
+ancestors, so every ancestor of every in-window row is protected, including the
+roots. A row's own id is _not_ protected by its own position: discarding its
+children removes only rows below it, all of which are outside the window by
+construction. That is what lets a parent sitting on screen still shed the subtree
+hanging off it.
+
+**LRU.** One `++clock` per parent per sweep, assigned in row order, so two marks
+are never equal and eviction order is deterministic rather than incidental. A
+mark is dropped when the parent's loaded count reaches zero, so a parent that is
+evicted and later reloaded cannot inherit an old position in the queue.
+
+**The roots are evictable.** When the window contains no rows at all, nothing is
+protected and `null` is a legitimate victim. This was found by N5 firing on three
+shapes: the roots really were being discarded and the harness was recording only
+node ids, so a correct eviction looked like an unexplained regression. The
+invariant inputs now admit `null`.
+
+### Finding 1: eviction granularity bounds the reachable budget
+
+Eviction discards a whole parent's prefix. A budget below one page of a single
+protected parent is therefore unreachable: pairing a page size of 100 with a
+budget of 60 makes N2 fire everywhere, because one protected parent's page
+already exceeds the budget with nothing left to discard.
+
+This is the granularity of the mechanism, not a defect in it, but it is a real
+constraint on configuration: a usable budget must exceed the page size times the
+number of parents the protected window can span. Recorded here rather than worked
+around, because a finer-grained evictor (discarding partial prefixes) would break
+the prefix model that the whole coverage design rests on.
+
+### Finding 2: N2 and the REVERSE condition contradict each other
+
+N2 as pre-registered is unconditional: _materialized rows never exceed the budget
+after any operation completes_. The pre-registered REVERSE condition names a state
+in which they must: _some workload drives rows past `B` with eviction enabled and
+every row inside the protected window_.
+
+Both cannot hold. A state where the protected window alone exceeds `B` satisfies
+the REVERSE condition and violates N2 simultaneously.
+
+Neither `bench/thresholds.m1.json` nor the criteria above were modified. The
+invariant checker relaxes the budget only while a sweep reports itself `stuck`,
+which is exactly the state REVERSE describes, and `EvictionReport.stuck` makes it
+visible rather than silently tolerated. The correct resolution is to restate N2 as
+conditional on a non-stuck sweep, but amending pre-registered criteria mid-flight
+is the failure mode this methodology exists to prevent, so it is reported and left
+for the commit 10 verdict.
+
+### W7 reachability, measured
+
+`shallow-wide` at 20,000 nodes, 40 rounds, page size 100, `B` = 4,000:
+
+| Peak rows before sweep | Peak rows after sweep | Evictions | Sweeps |
+| ---------------------- | --------------------- | --------- | ------ |
+| 12,718                 | 3,999                 | 3,007     | 40     |
+
+W7 reaches 3.2x the budget, so A1 is exercised rather than vacuous, and eviction
+restores the bound on every sweep.

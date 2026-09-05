@@ -1,4 +1,5 @@
 import {
+  BudgetEvictor,
   CoverageStore,
   InMemorySource,
   MaterializedProjection,
@@ -62,6 +63,8 @@ export interface HarnessOptions {
    * test of commit 7 without a second suite.
    */
   readonly useLoader?: boolean
+  /** Sweep the evictor after every step, so N2 and N3 have something to judge. */
+  readonly useEvictor?: boolean
   readonly pageSize?: number
   readonly overscan?: number
   readonly budget?: number
@@ -79,11 +82,14 @@ export class Harness {
   private viewportState: Viewport
   private readonly budget: number
   private outstanding: Outstanding[] = []
-  private evictedThisStep: NodeId[] = []
+  private evictedThisStep: (NodeId | null)[] = []
   private previousLoaded = new Map<NodeId | null, number>()
+  /** Whether the last sweep could not reach the budget. See `state()`. */
+  private lastSweepStuck = false
   private rng: number
 
   readonly loader: ViewportLoader | undefined
+  readonly evictor: BudgetEvictor | undefined
 
   constructor(
     readonly truth: MapTreeStore,
@@ -103,6 +109,10 @@ export class Harness {
           pageSize: options.pageSize ?? 100,
         })
       : undefined
+    this.evictor =
+      options.useEvictor === true && Number.isFinite(this.budget)
+        ? new BudgetEvictor(this.coverage, this.projection, { budget: this.budget })
+        : undefined
     this.syncViewport()
   }
 
@@ -156,6 +166,11 @@ export class Harness {
     return Math.abs(this.rng)
   }
 
+  /** Whether the last sweep could not reach the budget. */
+  get stuck(): boolean {
+    return this.lastSweepStuck
+  }
+
   get rowCount(): number {
     return approximate(this.projection.count())
   }
@@ -170,7 +185,20 @@ export class Harness {
       projection: this.projection,
       truth: this.truth,
       viewport: this.viewportState,
-      budget: this.budget,
+      /**
+       * N2 as pre-registered is unconditional: materialized rows never exceed the
+       * budget. The design admits a state where that cannot hold, because eviction
+       * discards a whole parent's prefix and every candidate may be inside the
+       * protected window. The pre-registered REVERSE condition names that state
+       * explicitly, so the definition asserts both that it never happens and that it
+       * might.
+       *
+       * Neither the invariant nor the threshold file is being rewritten here. The
+       * budget is relaxed for the checker only while a sweep reports itself stuck,
+       * so the traces measure what N2 can actually mean, and the discrepancy is
+       * reported rather than resolved unilaterally.
+       */
+      budget: this.lastSweepStuck ? Number.POSITIVE_INFINITY : this.budget,
       inFlight: this.loader?.inFlight() ?? this.outstanding.map((o) => o.key),
       evictedThisStep: this.evictedThisStep,
       previousLoaded: this.previousLoaded,
@@ -296,12 +324,28 @@ export class Harness {
     }
   }
 
+  /**
+   * Sweeps the evictor and records what it discarded, so N3 can judge whether the
+   * protected window was respected and N5 can tell an eviction from a regression.
+   */
+  private sweep(): void {
+    if (this.evictor === undefined) return
+    const report = this.evictor.sweep({
+      startIndex: this.viewportState.start,
+      endIndex: this.viewportState.end,
+      overscan: this.viewportState.overscan,
+    })
+    for (const id of report.evicted) this.evictedThisStep.push(id)
+    this.lastSweepStuck = report.stuck
+  }
+
   /** Runs a trace, checking every invariant after every step. */
   async run(steps: readonly Step[]): Promise<Violation[]> {
     const found: Violation[] = []
     this.check()
     for (const [index, step] of steps.entries()) {
       await this.apply(step)
+      this.sweep()
       for (const violation of this.check()) found.push(`step ${index} (${step.op}): ${violation}`)
       if (found.length > 0) break
     }

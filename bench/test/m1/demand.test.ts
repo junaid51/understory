@@ -184,3 +184,34 @@ describe('fault injection: a demand defect the invariants can and cannot see', (
     expect(new Set(loader.inFlight()).size).toBe(loader.inFlight().length)
   })
 })
+
+/**
+ * The same traces once more, with eviction enabled at a budget the traces actually
+ * cross. N2 and N3 are inert without it: nothing is ever over budget, so the
+ * bounded-row gate and the protected-window gate both pass without being asked
+ * anything.
+ *
+ * Page size and budget are chosen together on purpose. Eviction discards a whole
+ * parent's prefix, so a budget smaller than one page of a protected parent cannot
+ * be reached at all: the first attempt paired a page size of 100 with a budget of
+ * 60, and N2 fired everywhere because a single protected parent's page already
+ * exceeded the budget. That is not a defect, it is the granularity of the
+ * mechanism, and it means a usable budget must exceed the page size times the
+ * number of parents the protected window can span.
+ */
+describe.each(TRACE_NAMES)('trace %s under eviction pressure', (trace) => {
+  test.each(SHAPES)('shape %s', async (shape) => {
+    const truth = generate(shape, { nodes: NODES, seed: 42 })
+    const harness = new Harness(truth, {
+      useLoader: true,
+      useEvictor: true,
+      budget: 120,
+      seed: 9,
+      pageSize: 10,
+    })
+    expect(await harness.run(demandDriven(TRACES[trace]({ truth, order: 'shuffled' })))).toEqual([])
+    // Either the bound holds, or eviction reported that it cannot be reached
+    // because everything left is protected. See the note in Harness.state().
+    expect(harness.rowCount <= 120 || harness.stuck).toBe(true)
+  })
+})

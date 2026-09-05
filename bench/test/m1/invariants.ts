@@ -39,8 +39,14 @@ export interface M1State {
   readonly budget: number
   /** Request keys currently outstanding, for N6. */
   readonly inFlight: readonly string[]
-  /** Parents whose coverage this step deliberately discarded, for N3 and N5. */
-  readonly evictedThisStep: readonly NodeId[]
+  /**
+   * Parents whose coverage this step deliberately discarded, for N3 and N5.
+   *
+   * Includes `null`, the roots, which are evictable when nothing at all is visible.
+   * Recording only node ids made a legitimate root eviction look to N5 like an
+   * unexplained regression.
+   */
+  readonly evictedThisStep: readonly (NodeId | null)[]
   /** Loaded counts per parent as of the previous check, for N5. */
   readonly previousLoaded: ReadonlyMap<NodeId | null, number>
 }
@@ -111,12 +117,19 @@ export function checkM1Invariants(state: M1State): Violation[] {
     const from = state.viewport.start - state.viewport.overscan
     const to = state.viewport.end + state.viewport.overscan
     const protectedIds = new Set<NodeId>()
+    let anythingVisible = false
     for (const row of rows) {
-      if (row.kind === 'node' && row.index >= from && row.index < to) protectedIds.add(row.id)
+      if (row.index < from || row.index >= to) continue
+      anythingVisible = true
+      if (row.kind === 'node') protectedIds.add(row.id)
     }
     for (const evicted of state.evictedThisStep) {
-      if (protectedIds.has(evicted)) {
-        violations.push(`N3 viewport-protected: ${evicted} was evicted while inside the window`)
+      // Discarding the roots destroys every row, so it is a violation whenever the
+      // window holds anything at all.
+      if (evicted === null ? anythingVisible : protectedIds.has(evicted)) {
+        violations.push(
+          `N3 viewport-protected: ${evicted ?? '<roots>'} was evicted while the window held rows`,
+        )
         break
       }
     }
@@ -149,11 +162,11 @@ export function checkM1Invariants(state: M1State): Violation[] {
   }
 
   // N5  coverage shrinks only where this step evicted
-  const evicted = new Set<NodeId>(state.evictedThisStep)
+  const evicted = new Set<NodeId | null>(state.evictedThisStep)
   for (const [parentId, before] of state.previousLoaded) {
     const now = coverage.loadedCount(parentId)
     if (now >= before) continue
-    if (parentId !== null && evicted.has(parentId)) continue
+    if (evicted.has(parentId)) continue
     // A descendant of an evicted parent legitimately disappears with it.
     if (parentId !== null && coverage.get(parentId) === undefined) continue
     violations.push(
