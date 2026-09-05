@@ -1,6 +1,27 @@
 # ADR-0002: The index space is a tree of cached spans
 
-Status: **Proposed. This is the hypothesis M0 exists to test.**
+Status: **Proposed. Baseline measured; awaiting the span implementation.**
+
+## Gate result, 5 September 2026
+
+The materialized baseline was measured against the pre-registered thresholds at
+one million nodes on all five shapes. It **breaches on every shape**, so REVERSE
+is not available and the span index space gets built.
+
+The margin is not marginal. Expand, collapse and subtree-size-change land between
+**51x and 100x over** the 4ms frame threshold, at 206ms to 398ms p99. The cost
+scales linearly with visible rows, roughly 2000x from 1k to 1M, which is what a
+full rebuild per structural change predicts.
+
+The baseline wins decisively where it was expected to: random index resolution at
+0.27 microseconds against a 50 microsecond limit, and a 100-row window in 2 to 5
+microseconds against a 1 millisecond limit. Retained heap is 0.19 to 0.26 times
+the store, well inside the 1.5 ceiling. Those wins are the bar the span
+implementation must not fall more than 2x below.
+
+Verdict tool output is reproduced verbatim in `docs/benchmarks.md`. The candidate
+outcome is CONFIRM, contingent on the span implementation delivering at least 3x
+at p99 on each breached metric. If it does not, this ADR still reverses.
 
 ## Context
 
