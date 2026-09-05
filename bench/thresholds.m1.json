@@ -1,0 +1,157 @@
+{
+  "preRegisteredOn": "2026-09-05",
+  "preRegisteredBefore": "any M1 implementation code. No HierarchySource, coverage, demand or eviction exists at this commit.",
+  "derivedFrom": "bench/results/calibration-local-2026-09-05.json",
+  "note": "This is the last commit in which any M1 performance threshold may be introduced or changed. Moving a number here after seeing an M1 result invalidates the experiment, and the git history is the evidence that it was not done.",
+
+  "budget": {
+    "materializedRows": 4000,
+    "structuralChangeMs": 4.0,
+    "statistic": "worst-repeat p99",
+    "derivation": {
+      "rule": "B = floor(min(C_A, C_B, C_C) * 0.5 / 1000) * 1000",
+      "safetyFactor": 0.5,
+      "safetyFactorPreRegisteredIn": "docs/m1-definition.md §9, written before the calibration ran",
+      "scope": "method=partial only; shapes with fewer than three reachable sweep points are excluded by name, never recorded as zero",
+      "excludedShapes": ["mega-sibling"],
+      "excludedReason": "its root owns every other node, so expansion is all-or-nothing and no intermediate row count exists. All 18 partial sweep points were unreachable. Recording that absence as a ceiling of zero is the defect that would have set B to nothing.",
+      "readings": {
+        "C_A": {
+          "value": 10000,
+          "binding": "deep-narrow",
+          "definition": "largest row count whose worst-repeat p99 is within budget"
+        },
+        "C_B": {
+          "value": 8803,
+          "binding": "sparse-unbalanced",
+          "definition": "largest row count such that every measured point up to and including it stayed within budget"
+        },
+        "C_C": {
+          "value": 10917,
+          "binding": "deep-narrow",
+          "definition": "least-squares fit through the origin over all points, solved at the budget"
+        }
+      },
+      "chosen": "min",
+      "chosenBecause": "the pre-registered wording did not disambiguate between these readings, and the three disagree by 1.24x. Taking the minimum removes the author's discretion over which reading applies and cannot be self-serving, since it is the smallest of the candidates."
+    },
+    "operatingPointRows": 80,
+    "headroomFactor": 50
+  },
+
+  "acceptanceGates": [
+    {
+      "id": "A1",
+      "name": "bounded materialized rows",
+      "rule": "max materialized rows <= 4000, in every workload, shape and latency profile",
+      "provenance": "derived from calibration",
+      "canFail": "yes, via W7, which is the only workload that deliberately accumulates coverage toward the ceiling"
+    },
+    {
+      "id": "A2",
+      "name": "structural-change latency",
+      "rule": "worst-repeat p99 of synchronous structural change <= 4.0ms",
+      "provenance": "derived from calibration",
+      "canFail": "expected to pass with wide margin; its value is as a falsifier of the central hypothesis, not as a discriminator. If A2 fails while A1 passes, bounded rows are not sufficient and the outcome is REVERSE."
+    },
+    {
+      "id": "A3",
+      "name": "request amplification, eviction disabled",
+      "rule": "pages requested <= theoreticalMinimum + parentsEverVisible",
+      "provenance": "derived, not guessed",
+      "derivation": "the demand rule fetches the next page when the window comes within overscan of the end of a parent's loaded run, and cannot fire again for that parent until the run is consumed. At most one speculative page per parent therefore lies outside Reach for the whole trace. An additive bound is exact where a ratio would have been a guess.",
+      "canFail": "yes, on any duplicate, redundant or run-ahead request"
+    },
+    {
+      "id": "A4",
+      "name": "request amplification, eviction enabled",
+      "rule": "pages requested <= 3.0 * theoreticalMinimum",
+      "provenance": "POLICY, not derived. It states that a reader who leaves a region and returns should not pay more than three fetches per reached page on average. No calculation produces 3.0.",
+      "canFail": "yes, under W6 and W7"
+    },
+    {
+      "id": "A5",
+      "name": "no wasted requests",
+      "rule": "zero duplicate or overlapping requested ranges for the same parent",
+      "provenance": "correctness",
+      "canFail": "yes, on a single-flight or generation defect"
+    },
+    {
+      "id": "A6",
+      "name": "retained heap",
+      "rule": "engine retained heap <= 1.5 * retained heap of the loaded node records alone",
+      "provenance": "carried from M0, where the materialized projection measured 0.19 to 0.26",
+      "canFail": "yes"
+    },
+    {
+      "id": "A7",
+      "name": "correctness under arbitrary interaction",
+      "rule": "zero violations of invariants I1-I15 and N1-N11 across 10000 generated sequences, including responses shuffled within a window of three",
+      "provenance": "correctness",
+      "canFail": "yes"
+    },
+    {
+      "id": "A8",
+      "name": "the D2 product limitation is bounded, not merely disclosed",
+      "rule": "count() is monotonically non-decreasing except through collapse or eviction, and is 'exact' only when every visible parent is exhausted or source-counted",
+      "provenance": "product",
+      "rationale": "D2 accepts a scrollbar that grows as the reader explores. It does not accept one that jumps backwards. Growth is a stated limitation; non-monotonicity would be a defect.",
+      "canFail": "yes, on a count-correction or eviction defect"
+    }
+  ],
+
+  "diagnostics": [
+    {
+      "id": "D1",
+      "name": "structural-change p50 and p95",
+      "why": "p50 was stable to 0.089ms median spread during calibration where p99 spread reached 5.286ms. Reported so regressions are visible in a low-noise statistic, never used as a gate, because a frame that misses is a frame the reader sees."
+    },
+    { "id": "D2", "name": "pages requested, absolute", "why": "context for A3 and A4" },
+    {
+      "id": "D3",
+      "name": "amplification broken down by workload and shape",
+      "why": "an aggregate that passes can hide one workload that does not"
+    },
+    { "id": "D4", "name": "retained heap in bytes", "why": "context for A6" },
+    {
+      "id": "D5",
+      "name": "partial versus sized locality ratio",
+      "why": "calibration measured up to 2.4x at equal row counts; worth watching for regression"
+    },
+    {
+      "id": "D6",
+      "name": "time to first row under each latency profile",
+      "why": "network-gated and therefore explicitly not held to the frame budget"
+    },
+    {
+      "id": "D7",
+      "name": "count-correction events per workload",
+      "why": "measures how often the D2 scrollbar grows, which is the felt cost of the design"
+    },
+    {
+      "id": "D8",
+      "name": "max materialized rows as a fraction of B",
+      "why": "if every workload stays far below B, A1 is passing for a reason other than the engine working, and that must be visible"
+    }
+  ],
+
+  "validity": {
+    "rule": "B is defensible as a single number only if all three hold",
+    "conditions": [
+      {
+        "check": "at least three shapes have three or more reachable partial sweep points",
+        "observed": "four of five",
+        "pass": true
+      },
+      { "check": "the binding crossing is at least 5000 rows", "observed": 8803, "pass": true },
+      { "check": "measurable shapes disagree by no more than 4x", "observed": 2.5, "pass": true }
+    ],
+    "ifViolated": "abandon the single budget and pre-register a per-shape budget instead, with A1 evaluated per shape"
+  },
+
+  "outcomes": {
+    "CONFIRM": "every acceptance gate A1 to A8 passes in every workload, shape and latency profile",
+    "REVERSE": "A2 fails while A1 passes, which falsifies the central hypothesis directly; or no eviction policy can hold A1 without violating N3",
+    "NARROW": "every gate passes except A4, with eviction-enabled amplification between 3.0x and 6.0x, in which case M1 ships with eviction disabled by default and the measured cost of enabling it documented; or every gate passes except on a single identified shape or fan-out threshold F, in which case F is documented as a limit"
+  }
+}

@@ -290,3 +290,25 @@ after commit 3 may change a threshold.
 Commits 4 through 8 each land behind the property suite from commit 6, which is
 why the suite arrives before the two features whose failure modes it exists to
 catch.
+
+---
+
+## Addendum, M1 commit 3: workload W7
+
+Reachability validation before committing thresholds found that **A1, the bounded
+materialized rows gate, was vacuous against W1 to W6**. Under D2 the materialized
+row count is bounded by pages fetched, which is bounded by how far a reader
+scrolls, so no workload in §6 accumulates enough coverage to approach the budget.
+A1 would have passed without ever being tested.
+
+|               | Workload                                                                                                                      |
+| ------------- | ----------------------------------------------------------------------------------------------------------------------------- |
+| W7 accumulate | Expand parents without collapsing, scrolling each into coverage, until materialized rows approach `B`, then continue past it. |
+
+W7 is the only workload that reaches the ceiling and therefore the only one that
+exercises eviction firing at the boundary. Diagnostic D8 reports maximum
+materialized rows as a fraction of `B`, so that a passing A1 can be told apart
+from an untested one.
+
+The budget itself, its derivation and the full acceptance criteria are in
+[docs/m1-budget.md](m1-budget.md) and `bench/thresholds.m1.json`.
