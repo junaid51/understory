@@ -245,7 +245,7 @@ export class MaterializedProjection implements Projection {
    * implementation has no way to refresh part of a table it rebuilds entirely,
    * and pretending otherwise would flatter it.
    */
-  invalidate(): void {
+  invalidate(_id: NodeId): void {
     this.dirty = true
   }
 }

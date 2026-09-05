@@ -173,7 +173,7 @@ export class FaultyProjection implements Projection {
     return new Set(this.expanded)
   }
 
-  invalidate(): void {}
+  invalidate(_id: NodeId): void {}
 }
 
 export const faultyFactory =

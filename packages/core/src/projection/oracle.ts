@@ -104,7 +104,7 @@ export class OracleProjection implements Projection {
   }
 
   /** Nothing to do: every call already rebuilds from the store. */
-  invalidate(): void {}
+  invalidate(_id: NodeId): void {}
 }
 
 export const oracleFactory = (

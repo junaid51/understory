@@ -8,7 +8,7 @@ import {
   type NodeId,
   type NodeRecord,
 } from '@understory/core'
-import type { MapTreeStore, Projection } from '@understory/core'
+import type { MapTreeStore } from '@understory/core'
 import { SHAPES, allIds, generate, inspectTopology, type ShapeName } from './corpus.js'
 import { controlWorkload, measure, retainedHeap } from './harness.js'
 import { MutableTreeStore } from './mutable-store.js'
@@ -219,9 +219,7 @@ function runPoint(shape: ShapeName, method: Method, target: number): Point | und
     })
 
     const mutable = MutableTreeStore.from(store)
-    // Typed as the interface: invalidate(id) is declared on Projection, while the
-    // materialized class accepts no argument because it rebuilds everything anyway.
-    const inv: Projection = new MaterializedProjection(mutable, expanded)
+    const inv = new MaterializedProjection(mutable, expanded)
     inv.count()
     const parentId = target2
     const original = parentId === undefined ? undefined : mutable.get(parentId)
