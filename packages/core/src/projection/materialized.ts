@@ -23,6 +23,16 @@ import type { Projection } from './types.js'
  *  4. Traversal is iterative with an explicit stack, so depth costs nothing and
  *     a pathological tree cannot exhaust the call stack.
  *
+ * A record cache keyed by interned index was tried and reverted. The hypothesis
+ * was that the rebuild loop was dominated by `store.get()` hash lookups. It was
+ * not: expand-collapse at 100k moved from 11.95ms to 12.97ms at p99, inside
+ * noise, while subtree-size-change went from 12.3ms to 19.1ms because
+ * `invalidate()` has to discard the cache and repopulate it. The rebuild cost is
+ * structural, being O(visible rows) per change by design, not a constant factor
+ * waiting to be tuned away. The optimisation failed the project's own rule that
+ * nothing lands without a benchmark number it improves, so it was removed. That
+ * rule is worth as much when it deletes work as when it prevents it.
+ *
  * Node ids are interned to integers on first sight rather than by enumerating
  * the store, because a store is not required to be enumerable and later ones
  * will not be.

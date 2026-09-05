@@ -9,7 +9,6 @@ import { SCENARIOS, analyse } from './scenarios.js'
 const SIZES = (process.env['UNDERSTORY_SIZES'] ?? '1000,10000,100000,1000000')
   .split(',')
   .map((s) => Number.parseInt(s, 10))
-
 const SHAPE_FILTER = process.env['UNDERSTORY_SHAPES']?.split(',') as ShapeName[] | undefined
 const SHAPE_LIST = SHAPE_FILTER ?? SHAPES
 const UNLOADED_FRACTION = Number(process.env['UNDERSTORY_UNLOADED'] ?? '0.05')
@@ -25,7 +24,6 @@ interface Measurement {
   readonly p95Ms: number
   readonly p99Ms: number
   readonly maxMs: number
-  /** Per-operation figures for batched scenarios, so thresholds can be read directly. */
   readonly perOpMeanUs: number
   readonly perOpP99Us: number
 }
@@ -47,23 +45,60 @@ const gitSha = (): string => {
   }
 }
 
+let snapshotPath = ''
+
+/** Written after every (shape, size) so a long run cannot lose everything. */
+function writeSnapshot(
+  measurements: readonly Measurement[],
+  heaps: readonly HeapMeasurement[],
+  control: number,
+  started: string,
+): void {
+  const isCi = process.env['CI'] === 'true'
+  const result = {
+    implementation: 'materialized',
+    commit: gitSha(),
+    started,
+    finished: new Date().toISOString(),
+    environment: {
+      node: process.version,
+      platform: `${process.platform}-${process.arch}`,
+      // Withheld locally: a CPU model from a personal machine is an
+      // unnecessary disclosure, and local runs are supplementary anyway.
+      cpu: isCi ? (cpus()[0]?.model ?? 'unknown') : 'local (model withheld)',
+      cpuCount: cpus().length,
+      totalMemoryBytes: totalmem(),
+      ci: isCi,
+      runner: process.env['RUNNER_NAME'] ?? null,
+    },
+    controlWorkloadMs: control,
+    unloadedFraction: UNLOADED_FRACTION,
+    measurements,
+    heaps,
+  }
+  mkdirSync('bench/results', { recursive: true })
+  if (snapshotPath === '') {
+    snapshotPath = `bench/results/materialized-${isCi ? 'ci' : 'local'}-${started.slice(0, 10)}.json`
+  }
+  writeFileSync(snapshotPath, `${JSON.stringify(result, null, 2)}\n`)
+}
+
 function main(): void {
   const started = new Date().toISOString()
   const control = controlWorkload()
+  process.stderr.write(`control workload ${control.toFixed(2)}ms\n`)
   const measurements: Measurement[] = []
   const heaps: HeapMeasurement[] = []
 
   for (const shape of SHAPE_LIST) {
     for (const nodes of SIZES) {
-      process.stderr.write(`${shape} @ ${nodes}\n`)
+      process.stderr.write(`\n${shape} @ ${nodes}\n`)
       collectGarbage()
       const before = retainedHeap()
       const store = generate(shape, { nodes, seed: 42, unloadedFraction: UNLOADED_FRACTION })
       const storeBytes = retainedHeap() - before
-
       const ctx = analyse(store)
 
-      // Heap held by a fully expanded projection, separate from the store itself.
       const heapBefore = retainedHeap()
       const projection = new MaterializedProjection(store)
       for (const id of ctx.ids) projection.expand(id)
@@ -80,7 +115,10 @@ function main(): void {
 
       for (const scenario of SCENARIOS) {
         const op = scenario.prepare(ctx)
-        const stats = measure(op, scenario.samples)
+        const samples =
+          nodes >= 1_000_000 ? (scenario.samplesAtMillion ?? scenario.samples) : scenario.samples
+        const clock = Date.now()
+        const stats = measure(op, samples)
         const batch = scenario.batch ?? 1
         measurements.push({
           shape,
@@ -96,37 +134,21 @@ function main(): void {
           perOpMeanUs: (stats.mean * 1000) / batch,
           perOpP99Us: (stats.p99 * 1000) / batch,
         })
+        process.stderr.write(
+          `  ${scenario.name.padEnd(24)} n=${String(samples).padStart(4)}  p99=${stats.p99.toFixed(3)}ms  (${((Date.now() - clock) / 1000).toFixed(1)}s)\n`,
+        )
       }
+
+      writeSnapshot(measurements, heaps, control, started)
       collectGarbage()
     }
   }
 
-  const cpu = cpus()[0]?.model ?? 'unknown'
-  const result = {
-    implementation: 'materialized',
-    commit: gitSha(),
-    started,
-    finished: new Date().toISOString(),
-    environment: {
-      node: process.version,
-      platform: `${process.platform}-${process.arch}`,
-      cpu: process.env['CI'] === 'true' ? cpu : 'local (model withheld)',
-      cpuCount: cpus().length,
-      totalMemoryBytes: totalmem(),
-      ci: process.env['CI'] === 'true',
-      runner: process.env['RUNNER_NAME'] ?? null,
-    },
-    controlWorkloadMs: control,
-    unloadedFraction: UNLOADED_FRACTION,
-    measurements,
-    heaps,
-  }
-
-  mkdirSync('bench/results', { recursive: true })
-  const name = `bench/results/materialized-${process.env['CI'] === 'true' ? 'ci' : 'local'}-${started.slice(0, 10)}.json`
-  writeFileSync(name, `${JSON.stringify(result, null, 2)}\n`)
-  process.stderr.write(`\nwrote ${name}\n`)
-  process.stdout.write(JSON.stringify({ file: name, control, count: measurements.length }, null, 2))
+  writeSnapshot(measurements, heaps, control, started)
+  process.stderr.write(`\nwrote ${snapshotPath}\n`)
+  process.stdout.write(
+    JSON.stringify({ file: snapshotPath, control, count: measurements.length }, null, 2),
+  )
 }
 
 main()

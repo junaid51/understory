@@ -23,6 +23,13 @@ export interface ScenarioContext {
 export interface Scenario {
   readonly name: string
   readonly samples: number
+  /**
+   * Sample count at one million nodes, where a single sample can cost a full
+   * rebuild. Only reduced for scenarios that carry no pre-registered threshold,
+   * or where the threshold is generous enough that a small-sample p99 (which is
+   * effectively the max, and therefore stricter) is still a fair test.
+   */
+  readonly samplesAtMillion?: number
   /** Some operations are far below clock resolution and are timed in batches. */
   readonly batch?: number
   readonly note?: string
@@ -79,8 +86,26 @@ const read = (projection: Projection): void => {
 
 export const SCENARIOS: readonly Scenario[] = [
   {
+    // Added after a probe showed the pre-registered `initial-projection`
+    // scenario expands only depths 0 and 1, which on most shapes is a few dozen
+    // rows and therefore a weak test of what its 250ms threshold intended. The
+    // threshold is pre-registered and is NOT being changed; this scenario is
+    // supplementary, carries no threshold, and exists so the report can state
+    // the cold full-build cost honestly alongside it.
+    name: 'full-projection-build',
+    samples: 12,
+    samplesAtMillion: 5,
+    note: 'cold build with every node expanded. Supplementary: no pre-registered threshold',
+    prepare: (ctx) => () => {
+      const projection = new MaterializedProjection(ctx.store)
+      expandAll(projection, ctx.ids)
+      read(projection)
+    },
+  },
+  {
     name: 'initial-projection',
     samples: 12,
+    samplesAtMillion: 8, // p99 of 8 samples is effectively the max, which is stricter than the threshold asks for
     note: 'fresh projection, expand roots and their children, then read',
     prepare: (ctx) => {
       const opening = ctx.ids.filter((id) => (ctx.depthByNode.get(id) ?? 99) <= 1)
@@ -134,6 +159,7 @@ export const SCENARIOS: readonly Scenario[] = [
   {
     name: 'deep-expansion-chain',
     samples: 30,
+    samplesAtMillion: 3, // one sample is a whole root-to-leaf path, each step a full rebuild; no pre-registered threshold
     note: 'expand every node on a root-to-leaf path, reading after each',
     prepare: (ctx) => {
       const path = ctx.deepestPath
@@ -149,6 +175,7 @@ export const SCENARIOS: readonly Scenario[] = [
   {
     name: 'large-sibling-set',
     samples: 40,
+    samplesAtMillion: 10, // no pre-registered threshold
     note: 'expand the widest parent, then read',
     prepare: (ctx) => {
       const target = ctx.branchy[0]
@@ -188,6 +215,7 @@ export const SCENARIOS: readonly Scenario[] = [
   {
     name: 'scroll-sequential',
     samples: 400,
+    samplesAtMillion: 200, // cheap per sample; 200 still resolves p99
     note: 'one 100-row window, advancing through the space',
     prepare: (ctx) => {
       const projection = new MaterializedProjection(ctx.store)
@@ -203,6 +231,7 @@ export const SCENARIOS: readonly Scenario[] = [
   {
     name: 'scroll-repeated',
     samples: 400,
+    samplesAtMillion: 200, // cheap per sample
     note: 'back and forth over the same region',
     prepare: (ctx) => {
       const projection = new MaterializedProjection(ctx.store)
@@ -218,6 +247,7 @@ export const SCENARIOS: readonly Scenario[] = [
   {
     name: 'scroll-random-jump',
     samples: 400,
+    samplesAtMillion: 200, // cheap per sample
     note: 'window positions chosen at random, as from a scrollbar drag',
     prepare: (ctx) => {
       const projection = new MaterializedProjection(ctx.store)
@@ -261,6 +291,7 @@ export const SCENARIOS: readonly Scenario[] = [
   {
     name: 'estimate-correction',
     samples: 80,
+    samplesAtMillion: 40, // no pre-registered threshold
     note: 'an unloaded node receives its real children, replacing an estimate',
     prepare: (ctx) => {
       const mutable = MutableTreeStore.from(ctx.store)
