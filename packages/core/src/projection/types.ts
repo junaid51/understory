@@ -20,7 +20,11 @@ export interface Projection {
   collapse(id: NodeId): void
   expandedIds(): ReadonlySet<NodeId>
   /**
-   * The children of this node changed in the store.
+   * The children of this parent changed in the store. `null` is the roots.
+   *
+   * Widened from `NodeId` at M1 commit 6: the source contract addresses roots as a
+   * parent like any other, and this signature could not express that the roots had
+   * changed, which forced a cast at the only call site that needed it.
    *
    * Added at commit 9 because `subtree-size-change` is one of the breached
    * metrics the span implementation has to improve on, and it cannot be measured
@@ -30,7 +34,7 @@ export interface Projection {
    * node and carries the difference up one ancestor chain, and the oracle ignores
    * it because it rebuilds on every call anyway.
    */
-  invalidate(id: NodeId): void
+  invalidate(parentId: NodeId | null): void
 }
 
 export type ProjectionFactory = (

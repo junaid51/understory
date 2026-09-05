@@ -431,8 +431,9 @@ export class SpanProjection implements Projection {
    * chain. This is the operation the whole design exists for: a subtree changing
    * size costs O(depth), not O(visible rows).
    */
-  invalidate(id: NodeId): void {
-    const index = this.indexById.get(id)
+  invalidate(parentId: NodeId | null): void {
+    if (parentId === null) return
+    const index = this.indexById.get(parentId)
     if (index === undefined) return
 
     const oldSpan = this.spanOf(index)
