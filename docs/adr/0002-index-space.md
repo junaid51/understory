@@ -1,79 +1,77 @@
 # ADR-0002: The index space is a tree of cached spans
 
-Status: **Proposed. Both implementations measured. The verdict tool returned
-REVERSE; the result is disputed on the record and awaiting a decision.**
+Status: **Rejected by the pre-registered rules, 5 September 2026.**
+See "Outcome" below, including a definitional defect in the rules themselves that
+is recorded rather than used to overturn them.
 
-## Result, 5 September 2026, both implementations measured
+## Outcome
 
-`npm run bench:verdict` returned **REVERSE**, on one clause: `initial-projection`
-at `mega-sibling` was a breached baseline metric and the span implementation
-improved it 0.96x, not the required 3x.
+`npm run bench:verdict` returned **REVERSE** on the corrected corpora, on two
+clauses, both on `mega-sibling`, the shape where one node owns a million direct
+children:
 
-The rest of the table is not close. On the metrics the design exists for, the span
-index space beats the materialized baseline by **3,686x to 27,946x at p99**:
-expand and collapse fall from 216-362ms to 0.009-0.063ms, and subtree-size-change
-from 212-347ms to 0.008-0.040ms, on every shape.
+```
+SHORT initial-projection    mega-sibling    0.91x  need 3x
+SHORT subtree-size-change   mega-sibling    1.94x  need 3x
+```
 
-Three things are wrong with concluding REVERSE from that, and all three are
-recorded here rather than being used to overrule the tool:
+Everything else is a rout in the other direction. Against the same thresholds:
 
-1. The failing clause is a scenario already documented as weak before any span
-   code existed. `initial-projection` expands only depths 0 and 1, which on
-   mega-sibling means expanding one node with a million children. Neither
-   implementation can avoid materialising a million rows there.
-2. The verdict tool never applies the thresholds to the span implementation at
-   all, only to the baseline. Doing so by hand finds span breaching three of them:
-   `initial-projection` at mega-sibling (639ms, 2.6x over), `subtree-size-change`
-   at mega-sibling (80.9ms, 20.2x over) and `resolve-random` at shallow-wide
-   (129.8us, 2.6x over). That is a defect in the tool, not in the thresholds.
-3. Span loses reads badly, well past the 2x reportable bar: `resolve-random` at
-   shallow-wide is 480x slower and `scroll-random-jump` at shallow-wide 12,956x
-   slower. Diagnosis below.
+|                                                 | Materialized                                                                                        | Span                                                          |
+| ----------------------------------------------- | --------------------------------------------------------------------------------------------------- | ------------------------------------------------------------- |
+| Thresholds failed at 1M                         | **16**                                                                                              | **2**                                                         |
+| Which                                           | expand/collapse and subtree-size-change on all five shapes, plus initial-projection at mega-sibling | initial-projection and subtree-size-change, mega-sibling only |
+| Structural change, four non-pathological shapes | 243-417 ms p99                                                                                      | 0.006-0.046 ms p99                                            |
+| Best case improvement                           |                                                                                                     | 44,513x                                                       |
+| Retained heap at 1M                             | 60.8 MB                                                                                             | 61.2 MB                                                       |
 
-## The read regression is a memory layout problem, not an algorithmic one
+Span turns 16 failures into 2 and confines both to the pathological shape.
 
-Instrumented at 200,000 nodes, a descent costs 60 `spanOf` calls on shallow-wide
-and 22 on balanced. That is the O(depth x fanout) the header predicts and it is
-cheap. At a million nodes the same descent measures 130us, roughly fifty times
-what those array reads should cost.
+## Why REVERSE follows from the rules anyway
 
-The cause is `childList`: one `Int32Array` per materialised node, held in a
-JavaScript array a million entries long. Random descent chases a pointer into a
-cold megabyte-scale array and then into a separate small heap object per level.
-It also explains the heap: span retains 210-275MB against the baseline's 61MB,
-between 0.66x and 1.17x of the store where the baseline sits at 0.19-0.26x.
+Criterion A, pre-registered, requires span to improve **each** breached metric by
+3x at p99. Two of sixteen fall short. The rule admits no exemption for a shape,
+and it should not: a rule that can be waived per shape after the data is in is not
+a rule.
 
-The fix is to pack every child list into one flat `Int32Array` with per-node
-offsets, which removes both the pointer chase and the million small objects. It is
-not applied yet: it needs its own commit, its own measurement, and the same
-discipline as everything else.
+NARROW was defined as "breaches confined to pathological shapes". As written it
+keys on where the **baseline** breached, and the baseline breached everywhere, so
+NARROW is unreachable by construction. The case actually observed, where the
+proposal's _remaining_ failures are confined to the pathological shape, is what
+NARROW was meant to describe and is not what it says.
 
-## Status is unchanged until that is resolved
+That is a defect in the pre-registration, found after seeing the data. It is
+recorded here and deliberately **not** used to reinterpret the outcome, because
+adjusting an acceptance criterion after seeing results is the exact failure this
+apparatus exists to prevent. The verdict stands as the rules produce it.
 
-ADR-0002 stays **Proposed**. The evidence supports the core claim overwhelmingly
-and simultaneously shows the current implementation breaching three thresholds it
-must meet. Neither half of that is a reason to move the status.
+## The limit that is real
 
-## Gate result, 5 September 2026
+`mega-sibling` failures are not measurement artefacts. Interning a million
+children costs O(fanout) on first expansion, and re-materialising them after a
+change costs O(fanout) again. No layout change removes that; experiment 0001
+predicted both would survive packing, and both did. **The span index space has a
+genuine limit where a single node owns hundreds of thousands of children**, and at
+that extreme the materialized projection is no worse.
 
-The materialized baseline was measured against the pre-registered thresholds at
-one million nodes on all five shapes. It **breaches on every shape**, so REVERSE
-is not available and the span index space gets built.
+The remaining read regressions are inside every absolute threshold but past the 2x
+reportable bar: `scroll-sequential` at sparse-unbalanced is 103x slower (0.254ms
+against a 1ms limit), `resolve-random` at sparse-unbalanced 7.3x (1.97us against
+50us). O(depth x fanout) descent against O(1) array indexing, as designed.
 
-The margin is not marginal. Expand, collapse and subtree-size-change land between
-**51x and 100x over** the 4ms frame threshold, at 206ms to 398ms p99. The cost
-scales linearly with visible rows, roughly 2000x from 1k to 1M, which is what a
-full rebuild per structural change predicts.
+## What the corrected corpora changed
 
-The baseline wins decisively where it was expected to: random index resolution at
-0.27 microseconds against a 50 microsecond limit, and a 100-row window in 2 to 5
-microseconds against a 1 millisecond limit. Retained heap is 0.19 to 0.26 times
-the store, well inside the 1.5 ceiling. Those wins are the bar the span
-implementation must not fall more than 2x below.
+The commit 10 measurements were partly invalid. `shallow-wide` at 1M had 437,659
+synthetic roots. On corrected corpora:
 
-Verdict tool output is reproduced verbatim in `docs/benchmarks.md`. The candidate
-outcome is CONFIRM, contingent on the span implementation delivering at least 3x
-at p99 on each breached metric. If it does not, this ADR still reverses.
+|                                     | Old corpus | Corrected                              |
+| ----------------------------------- | ---------- | -------------------------------------- |
+| `resolve-random` @ shallow-wide     | 129.8 us   | **0.43 us**                            |
+| `scroll-random-jump` @ shallow-wide | 43.7 ms    | **0.024 ms**                           |
+| `initial-projection` @ shallow-wide | 225.8 ms   | **1.57 ms**, 4.4x faster than baseline |
+
+The 433x read regression that dominated the commit 10 report was almost entirely
+a broken corpus.
 
 ## Context
 

@@ -22,5 +22,9 @@ Writing them earlier would be guessing in a format that looks like certainty.
 | [0008](0008-reference-oracle.md)     | Correctness is established by a reference oracle              | M0        | Accepted                          |
 | [0010](0010-licence-packaging-ci.md) | MIT, two packages, CI as the benchmark environment            | M0        | Accepted, one deviation           |
 
-ADR-0002 is deliberately not accepted. It is the hypothesis M0 exists to test, and
-the thresholds that decide it are committed before the implementation is written.
+ADR-0002 was the hypothesis M0 existed to test. The thresholds that decided it were
+committed before the implementation was written, and the verdict was computed by a
+tool rather than argued. It returned REVERSE. The span index space beat the
+materialized baseline by up to 44,513x on structural change and reduced threshold
+failures from sixteen to two, and the two it could not fix were enough to fail the
+pre-registered acceptance rule. That result is recorded as it came out.
