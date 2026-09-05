@@ -17,11 +17,11 @@ application and no source adapter, by design. See `docs/adr/` for why.
 
 ## Three implementations, three roles
 
-| Role | Implementation | Optimised? |
-| --- | --- | --- |
-| Correctness reference | `oracle` | Never. Obviously correct by inspection. |
+| Role                  | Implementation | Optimised?                                      |
+| --------------------- | -------------- | ----------------------------------------------- |
+| Correctness reference | `oracle`       | Never. Obviously correct by inspection.         |
 | The honest competitor | `materialized` | Yes, the way a shipped implementation would be. |
-| The proposal | `span` | Yes. Must beat `materialized`, not `oracle`. |
+| The proposal          | `span`         | Yes. Must beat `materialized`, not `oracle`.    |
 
 The oracle exists only to be the right-hand side of a comparison. Benchmarking against
 it would rig the experiment, so it never appears in a benchmark.

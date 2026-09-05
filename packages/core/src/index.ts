@@ -1,1 +1,1 @@
-export const PLACEHOLDER = 'm0' as const
+export * from './model/index.js'
