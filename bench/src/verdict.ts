@@ -137,68 +137,158 @@ for (const heap of baseline.heaps.filter((h) => h.nodes === thresholds.scale.nod
 
 const out: string[] = []
 out.push('')
-out.push(`ADR-0002 verdict    thresholds pre-registered ${'2026-09-05'}`)
+out.push('ADR-0002 verdict    thresholds pre-registered 2026-09-05')
+out.push(`baseline commit ${baseline.commit}   control ${baseline.controlWorkloadMs.toFixed(2)}ms`)
 out.push(
-  `baseline commit ${baseline.commit}   control workload ${baseline.controlWorkloadMs.toFixed(2)}ms`,
+  span === undefined
+    ? 'span results: none yet'
+    : `span commit ${span.commit}   control ${span.controlWorkloadMs.toFixed(2)}ms`,
 )
-out.push(`span results: ${span === undefined ? 'none yet' : `commit ${span.commit}`}`)
-out.push('-'.repeat(100))
-out.push(...rows)
-out.push('-'.repeat(100))
+out.push('='.repeat(104))
 
-const breachedShapes = [...new Set(breaches.map((b) => b.shape))]
+/**
+ * Evaluates every threshold against one implementation.
+ *
+ * The first version of this tool only ever did this for the baseline, which is a
+ * blind spot pointing in exactly the direction that flatters the proposal: it
+ * reported a verdict without ever asking whether the proposed implementation met
+ * the bar it was proposed against. Applying the thresholds by hand afterwards
+ * found three breaches it had missed.
+ */
+function evaluate(file: ResultFile, label: string): Breach[] {
+  const found: Breach[] = []
+  out.push('')
+  out.push(`-- ${label} against the pre-registered thresholds`)
+  for (const threshold of thresholds.baselineMustSatisfy) {
+    for (const shape of shapes) {
+      const measurement = at(file, shape, threshold.scenario)
+      if (measurement === undefined) continue
+      const observed = Number(measurement[threshold.stat])
+      const pass = observed <= threshold.max
+      if (!pass) {
+        found.push({
+          shape,
+          scenario: threshold.scenario,
+          stat: threshold.stat,
+          observed,
+          max: threshold.max,
+          unit: threshold.unit,
+          factorOver: observed / threshold.max,
+        })
+      }
+      out.push(
+        `   ${pass ? 'PASS' : 'FAIL'}  ${threshold.scenario.padEnd(24)} ${shape.padEnd(18)} ${observed.toFixed(3).padStart(11)} ${threshold.unit.padEnd(2)} limit ${String(threshold.max).padStart(6)}${pass ? '' : `   ${(observed / threshold.max).toFixed(1)}x over`}`,
+      )
+    }
+  }
+  for (const heap of file.heaps.filter((h) => h.nodes === thresholds.scale.nodes)) {
+    const pass = heap.ratio <= thresholds.heap.maxProjectionToStoreRatio
+    if (!pass) {
+      found.push({
+        shape: heap.shape,
+        scenario: 'retained-heap',
+        stat: 'ratio',
+        observed: heap.ratio,
+        max: thresholds.heap.maxProjectionToStoreRatio,
+        unit: 'x',
+        factorOver: heap.ratio / thresholds.heap.maxProjectionToStoreRatio,
+      })
+    }
+    out.push(
+      `   ${pass ? 'PASS' : 'FAIL'}  ${'retained-heap'.padEnd(24)} ${heap.shape.padEnd(18)} ${heap.ratio.toFixed(3).padStart(11)} x  limit ${String(thresholds.heap.maxProjectionToStoreRatio).padStart(6)}`,
+    )
+  }
+  return found
+}
+
+const baselineBreaches = evaluate(baseline, 'MATERIALIZED (the baseline)')
+const spanBreaches = span === undefined ? [] : evaluate(span, 'SPAN (the proposal)')
+
+const breachedShapes = [...new Set(baselineBreaches.map((b) => b.shape))]
 const commonBreached = breachedShapes.filter((s) =>
   thresholds.shapeClassification.common.includes(s),
 )
 
+out.push('')
+out.push('='.repeat(104))
+
 let verdict: string
-if (breaches.length === 0) {
+if (baselineBreaches.length === 0) {
   verdict = 'REVERSE'
-  out.push('The materialized baseline satisfies every pre-registered threshold on every shape.')
-  out.push('The span index space is not built. ADR-0002 is withdrawn.')
+  out.push('The baseline satisfies every threshold on every shape. The span index space is')
+  out.push('unnecessary and ADR-0002 is withdrawn.')
 } else if (span === undefined) {
   verdict = 'PENDING-SPAN'
   out.push(
-    `${breaches.length} breach(es) on ${breachedShapes.length} shape(s): ${breachedShapes.join(', ')}`,
+    `Baseline breaches ${baselineBreaches.length} threshold(s) on ${breachedShapes.length} shape(s).`,
   )
-  for (const b of breaches) {
+  for (const b of baselineBreaches) {
     out.push(
-      `  ${b.scenario} @ ${b.shape}: ${b.observed.toFixed(3)}${b.unit} vs ${b.max}${b.unit} (${b.factorOver.toFixed(1)}x over)`,
+      `   ${b.scenario} @ ${b.shape}: ${b.observed.toFixed(3)}${b.unit} vs ${b.max}${b.unit}`,
     )
   }
+} else {
+  // Criterion A, pre-registered literally: 3x at p99 on each breached metric.
+  out.push('-- criterion A (pre-registered): span improves each breached metric by 3x at p99')
+  const shortfalls: string[] = []
+  for (const b of baselineBreaches) {
+    const measurement = at(span, b.shape, b.scenario)
+    if (measurement === undefined) continue
+    const observed = Number(measurement[b.stat as keyof Measurement])
+    const improvement = observed > 0 ? b.observed / observed : Number.POSITIVE_INFINITY
+    const enough = improvement >= thresholds.spanMustImproveBreachedMetricsBy.factor
+    if (!enough) shortfalls.push(`${b.scenario}@${b.shape}`)
+    out.push(
+      `   ${enough ? 'MEETS' : 'SHORT'} ${b.scenario.padEnd(24)} ${b.shape.padEnd(18)} ${improvement.toFixed(2).padStart(12)}x  need ${thresholds.spanMustImproveBreachedMetricsBy.factor}x`,
+    )
+  }
+
+  // Criterion B: the proposal must itself satisfy the thresholds. Omitted from
+  // the original pre-registration, which was an oversight rather than a decision,
+  // so it is reported separately and never silently folded into criterion A.
   out.push('')
   out.push(
-    commonBreached.length > 0
-      ? `Breaches include common shapes (${commonBreached.join(', ')}), so the candidate outcome is CONFIRM if the span tree delivers 3x at p99 on each breached metric.`
-      : 'Breaches are confined to pathological shapes, so the candidate outcome is NARROW.',
+    '-- criterion B (NOT pre-registered, reported separately): span meets the thresholds itself',
   )
-} else {
-  const shortfalls: string[] = []
-  for (const b of breaches) {
-    const spanMeasurement = at(span, b.shape, b.scenario)
-    if (spanMeasurement === undefined) continue
-    const observed = Number(spanMeasurement[b.stat as keyof Measurement])
-    const improvement = b.observed / observed
-    const enough = improvement >= thresholds.spanMustImproveBreachedMetricsBy.factor
-    out.push(
-      `${enough ? 'MEETS' : 'SHORT'} ${b.scenario} @ ${b.shape}: ${improvement.toFixed(2)}x improvement (need ${thresholds.spanMustImproveBreachedMetricsBy.factor}x)`,
-    )
-    if (!enough) shortfalls.push(`${b.scenario}@${b.shape}`)
+  if (spanBreaches.length === 0) {
+    out.push('   span satisfies every threshold on every shape')
+  } else {
+    for (const b of spanBreaches) {
+      out.push(
+        `   FAIL  ${b.scenario.padEnd(24)} ${b.shape.padEnd(18)} ${b.observed.toFixed(3).padStart(11)}${b.unit} vs ${b.max}${b.unit}  (${b.factorOver.toFixed(1)}x over)`,
+      )
+    }
   }
+
+  out.push('')
+  out.push('-- reportable regressions: span slower than baseline past the 2x bar')
+  let regressions = 0
   for (const scenario of thresholds.spanRegressionMustBeReported.scenarios) {
     for (const shape of shapes) {
       const b = at(baseline, shape, scenario)
-      const s = at(span, shape, scenario)
-      if (b === undefined || s === undefined) continue
-      const ratio = s.p99Ms / b.p99Ms
+      const sp = at(span, shape, scenario)
+      if (b === undefined || sp === undefined || b.p99Ms === 0) continue
+      const ratio = sp.p99Ms / b.p99Ms
       if (ratio > thresholds.spanRegressionMustBeReported.factor) {
-        out.push(
-          `REPORTABLE REGRESSION ${scenario} @ ${shape}: span is ${ratio.toFixed(2)}x slower`,
-        )
+        regressions += 1
+        out.push(`   ${scenario.padEnd(24)} ${shape.padEnd(18)} span ${ratio.toFixed(1)}x slower`)
       }
     }
   }
-  verdict = shortfalls.length > 0 ? 'REVERSE' : commonBreached.length > 0 ? 'CONFIRM' : 'NARROW'
+  if (regressions === 0) out.push('   none')
+
+  out.push('')
+  if (shortfalls.length > 0) {
+    verdict = 'REVERSE'
+    out.push(`Criterion A not met: ${shortfalls.join(', ')}.`)
+  } else if (spanBreaches.length > 0) {
+    verdict = 'REVERSE'
+    out.push('Criterion A met, but the proposal does not satisfy the thresholds it was')
+    out.push('proposed against (criterion B). Shipping it would mean shipping a known breach.')
+  } else {
+    verdict = commonBreached.length > 0 ? 'CONFIRM' : 'NARROW'
+    out.push('Criteria A and B both met.')
+  }
 }
 
 out.push('')
