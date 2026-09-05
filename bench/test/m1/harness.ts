@@ -2,6 +2,7 @@ import {
   CoverageStore,
   InMemorySource,
   MaterializedProjection,
+  ViewportLoader,
   approximate,
   requestKey,
   type NodeId,
@@ -41,6 +42,8 @@ export type Step =
     }
   | { readonly op: 'settle'; readonly order: SettleOrder }
   | { readonly op: 'evict'; readonly parentId: NodeId }
+  /** Loader mode: let demand decide what to fetch, until it wants nothing more. */
+  | { readonly op: 'load' }
 
 interface Outstanding {
   readonly key: string
@@ -53,6 +56,13 @@ interface Outstanding {
 }
 
 export interface HarnessOptions {
+  /**
+   * Route expansion and viewport through a ViewportLoader and let demand choose
+   * the pages, instead of the trace naming them. Turns the same six traces into a
+   * test of commit 7 without a second suite.
+   */
+  readonly useLoader?: boolean
+  readonly pageSize?: number
   readonly overscan?: number
   readonly budget?: number
   readonly reportTotal?: boolean
@@ -73,6 +83,8 @@ export class Harness {
   private previousLoaded = new Map<NodeId | null, number>()
   private rng: number
 
+  readonly loader: ViewportLoader | undefined
+
   constructor(
     readonly truth: MapTreeStore,
     private readonly options: HarnessOptions = {},
@@ -86,6 +98,57 @@ export class Harness {
     this.viewportState = { start: 0, end: 40, overscan: options.overscan ?? 20 }
     this.budget = options.budget ?? Number.POSITIVE_INFINITY
     this.rng = options.seed ?? 1
+    this.loader = options.useLoader
+      ? new ViewportLoader(this.source, this.coverage, this.projection, {
+          pageSize: options.pageSize ?? 100,
+        })
+      : undefined
+    this.syncViewport()
+  }
+
+  private syncViewport(): void {
+    this.loader?.setViewport({
+      startIndex: this.viewportState.start,
+      endIndex: this.viewportState.end,
+      overscan: this.viewportState.overscan,
+    })
+  }
+
+  /**
+   * Runs the loader until demand is empty.
+   *
+   * In loader mode the source is still in manual release mode, so each round is
+   * released in the trace's chosen order before the next round is computed. That
+   * keeps out-of-order arrival in play while demand, rather than the trace, decides
+   * what to ask for.
+   */
+  private async drive(order: SettleOrder): Promise<void> {
+    const loader = this.loader
+    if (loader === undefined) return
+    for (let round = 0; round < 24; round++) {
+      if (loader.demand().length === 0) break
+      const pending = loader.load()
+      await Promise.resolve()
+      for (let drain = 0; drain < 4; drain++) {
+        const keys = [...this.source.pending()]
+        if (keys.length === 0) break
+        if (order === 'reverse') keys.reverse()
+        if (order === 'shuffled') {
+          for (let i = keys.length - 1; i > 0; i--) {
+            const j = this.nextRandom() % (i + 1)
+            const a = keys[i]
+            const b = keys[j]
+            if (a !== undefined && b !== undefined) {
+              keys[i] = b
+              keys[j] = a
+            }
+          }
+        }
+        this.source.releaseIn(keys)
+        await Promise.resolve()
+      }
+      await pending
+    }
   }
 
   private nextRandom(): number {
@@ -108,7 +171,7 @@ export class Harness {
       truth: this.truth,
       viewport: this.viewportState,
       budget: this.budget,
-      inFlight: this.outstanding.map((o) => o.key),
+      inFlight: this.loader?.inFlight() ?? this.outstanding.map((o) => o.key),
       evictedThisStep: this.evictedThisStep,
       previousLoaded: this.previousLoaded,
     }
@@ -204,19 +267,26 @@ export class Harness {
   async apply(step: Step): Promise<void> {
     switch (step.op) {
       case 'expand':
-        this.projection.expand(step.id)
+        if (this.loader !== undefined) this.loader.expand(step.id)
+        else this.projection.expand(step.id)
         break
       case 'collapse':
-        this.projection.collapse(step.id)
+        if (this.loader !== undefined) this.loader.collapse(step.id)
+        else this.projection.collapse(step.id)
         break
       case 'viewport':
         this.viewportState = { ...this.viewportState, start: step.start, end: step.end }
+        this.syncViewport()
+        break
+      case 'load':
+        await this.drive('inOrder')
         break
       case 'request':
         this.request(step.parentId, step.offset, step.limit)
         break
       case 'settle':
-        await this.settle(step.order)
+        if (this.loader !== undefined) await this.drive(step.order)
+        else await this.settle(step.order)
         break
       case 'evict':
         this.coverage.invalidate(step.parentId)

@@ -250,3 +250,24 @@ export const TRACES = {
 
 export type TraceName = keyof typeof TRACES
 export const TRACE_NAMES = Object.keys(TRACES) as TraceName[]
+
+/**
+ * Rewrites a trace so demand chooses the pages.
+ *
+ * Explicit `request` steps are dropped and every `settle` becomes a `load`, so the
+ * same six interaction shapes exercise commit 7 without a second suite. What
+ * survives is the part that matters: which nodes a reader opens, where the viewport
+ * goes, and when coverage is discarded.
+ */
+export function demandDriven(steps: readonly Step[]): Step[] {
+  const out: Step[] = []
+  for (const step of steps) {
+    if (step.op === 'request') continue
+    if (step.op === 'settle') {
+      out.push({ op: 'settle', order: step.order })
+      continue
+    }
+    out.push(step)
+  }
+  return out
+}
