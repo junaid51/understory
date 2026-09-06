@@ -435,3 +435,53 @@ describe('the granularity constraint', () => {
     )
   })
 })
+
+describe('a sweep never discards what was on screen when it started', () => {
+  /**
+   * The defect commit 9's benchmark found, reduced to one state.
+   *
+   * Protection used to be recomputed from scratch on every iteration of the sweep
+   * loop. Discarding a parent removes rows and everything below moves up, so a row
+   * that was inside the index window at the start of the sweep can fall out of it
+   * mid-sweep, at which point its ancestor becomes an ordinary eviction candidate.
+   * The sweep then discards exactly what the reader was looking at, one eviction
+   * after deciding it was protected.
+   *
+   * Three interaction traces on two corpus shapes reproduced it as soon as N3 was
+   * restated as row survival rather than as a statement about ancestors.
+   */
+  test('rows visible before the sweep are still rows after it', async () => {
+    const r = rig(6)
+    await openAll(r)
+    // A window low in the index space, so earlier evictions shift its contents.
+    const viewport = view(10, 14)
+    const before = new Set(
+      r.projection
+        .slice(0, approximate(r.projection.count()))
+        .filter((row) => row.index >= 10 && row.index < 14)
+        .map((row) => (row.kind === 'node' ? `n:${row.id}` : `p:${row.parentId}:${row.slot}`)),
+    )
+    expect(before.size).toBeGreaterThan(0)
+
+    r.evictor.sweep(viewport)
+
+    const after = new Set(
+      r.projection
+        .slice(0, approximate(r.projection.count()))
+        .map((row) => (row.kind === 'node' ? `n:${row.id}` : `p:${row.parentId}:${row.slot}`)),
+    )
+    for (const key of before) expect([...after], `${key} was evicted`).toContain(key)
+  })
+
+  test('holding protection across a sweep can leave it stuck, and it says so', async () => {
+    // The cost of the fix, asserted rather than left implicit. Refusing to discard
+    // what a sweep has already protected means a sweep can fail to reach the budget
+    // where a more aggressive one would have succeeded. That is the intended trade:
+    // an over-budget state is visible through `stuck`, a destroyed viewport is not.
+    const r = rig(2)
+    await openAll(r)
+    const report = r.evictor.sweep(view(0, 20))
+    expect(report.stuck).toBe(true)
+    expect(report.rowsAfter).toBeGreaterThan(2)
+  })
+})

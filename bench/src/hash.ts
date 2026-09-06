@@ -1,7 +1,7 @@
 import type { MapTreeStore } from '@understory/core'
 
 /** FNV-1a, 32-bit. Not cryptographic; it only has to detect drift. */
-function fnv1a(input: string): number {
+export function fnv1a(input: string): number {
   let h = 0x811c9dc5
   for (let i = 0; i < input.length; i++) {
     h ^= input.charCodeAt(i)
@@ -29,3 +29,16 @@ export function structureHash(store: MapTreeStore): string {
   }
   return fnv1a(parts.join('\n')).toString(16).padStart(8, '0')
 }
+
+/**
+ * A digest of an M1 state fingerprint.
+ *
+ * The fingerprint itself is a full description of coverage and rows, which is what
+ * makes it useful for reproducing a divergence and useless for storing: at a
+ * million nodes one run produced a single fingerprint of 1.08 MB, and a matrix of
+ * 756 runs wrote a 37 MB result file whose content was almost entirely these
+ * strings. Nothing ever reads a fingerprint; the only question asked of it is
+ * whether two runs agree, and a digest answers that in eight characters.
+ */
+export const fingerprintDigest = (fingerprint: string): string =>
+  `${fnv1a(fingerprint).toString(16).padStart(8, '0')}:${fingerprint.length}`

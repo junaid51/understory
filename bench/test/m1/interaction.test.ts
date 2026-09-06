@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'vitest'
 import { SHAPES, generate } from '../../src/corpus.js'
-import { Harness, type SettleOrder } from './harness.js'
-import { TRACES, TRACE_NAMES, type TraceName } from './traces.js'
+import { Harness, type SettleOrder } from '../../src/m1/harness.js'
+import { TRACES, TRACE_NAMES, type TraceName } from '../../src/m1/traces.js'
 
 /**
  * The M1 interaction suite.

@@ -153,11 +153,29 @@ export class BudgetEvictor {
     let rows = rowsBefore
     let stuck = false
 
+    /**
+     * Everything this sweep has ever had to protect, not just what it must protect
+     * right now.
+     *
+     * Discarding a parent removes rows, and every row below them moves up, so the
+     * window covers different content after each eviction. Protection recomputed
+     * from scratch each iteration therefore lets a sweep destroy the very rows the
+     * reader was looking at when it started: the first eviction shifts them out of
+     * the index range, and their ancestor is then an ordinary candidate. Measured,
+     * not theorised. Three workloads on two shapes reproduced it as an N3 violation
+     * the moment the invariant was restated as "a row visible when the sweep began
+     * is still a row when it ends", which is what N3 says.
+     *
+     * The union is the fix and it is the conservative direction: a sweep may end up
+     * `stuck` where it could have freed more, which is a bounded cost, whereas the
+     * alternative is discarding what is on screen.
+     */
+    const protectedDuringSweep = new Set<NodeId | null>(shielded.ids)
+
     while (rows > this.budget) {
-      // Recomputed each iteration and routed through `candidates`, so the policy has
-      // exactly one definition. Protection changes as rows disappear, and a second
-      // inline copy of the ordering would be a second thing to get wrong.
-      const victim = this.candidates(viewport)[0]
+      // Routed through `candidates` so the ordering policy has exactly one
+      // definition. A second inline copy would be a second thing to get wrong.
+      const victim = this.candidates(viewport, protectedDuringSweep)[0]
       if (victim === undefined) {
         stuck = true
         break
@@ -179,6 +197,9 @@ export class BudgetEvictor {
         break
       }
       rows = after
+      for (const id of protectedParents(this.projection, viewport).ids) {
+        protectedDuringSweep.add(id)
+      }
     }
 
     return {
@@ -201,12 +222,16 @@ export class BudgetEvictor {
    *
    * Exposed so the LRU policy can be asserted directly rather than inferred from
    * which rows happened to vanish, and so commit 9 can report what a workload was
-   * about to discard.
+   * about to discard. `alsoProtected` carries what a running sweep has accumulated;
+   * callers asking about the current state alone can omit it.
    */
-  candidates(viewport: Viewport): readonly (NodeId | null)[] {
+  candidates(
+    viewport: Viewport,
+    alsoProtected: ReadonlySet<NodeId | null> = new Set(),
+  ): readonly (NodeId | null)[] {
     const shielded = protectedParents(this.projection, viewport).ids
     return this.loadedParents()
-      .filter((id) => !shielded.has(id))
+      .filter((id) => !shielded.has(id) && !alsoProtected.has(id))
       .sort((a, b) => (this.lastTouched.get(a) ?? 0) - (this.lastTouched.get(b) ?? 0))
   }
 }

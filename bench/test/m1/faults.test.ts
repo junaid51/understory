@@ -1,9 +1,9 @@
 import { CoverageStore, approximate, nodeId, type NodeId, type Projection } from '@understory/core'
 import { describe, expect, test } from 'vitest'
 import { SHAPES, generate } from '../../src/corpus.js'
-import { Harness } from './harness.js'
-import { checkM1Invariants, type M1State } from './invariants.js'
-import { TRACES } from './traces.js'
+import { Harness } from '../../src/m1/harness.js'
+import { checkM1Invariants, visibleRowKeys, type M1State } from '../../src/m1/invariants.js'
+import { TRACES } from '../../src/m1/traces.js'
 
 /**
  * Does the M1 invariant suite have teeth?
@@ -59,16 +59,73 @@ describe('fault injection: each invariant must be capable of firing', () => {
   })
 
   test('N3 detects an eviction inside the protected window', async () => {
+    // Restated at commit 9 as row survival: snapshot what is visible, discard a
+    // parent that owns some of it, and the rows must be gone for N3 to fire. The
+    // earlier version handed the checker an id and a viewport and never removed
+    // anything, which tested the checker's bookkeeping rather than the property.
     const harness = await seed()
-    const firstRow = harness.projection.slice(0, 1)[0]
-    if (firstRow === undefined || firstRow.kind !== 'node') throw new Error('no rows to evict')
+    const viewport = { start: 0, end: 40, overscan: 20 }
+    const rows = harness.projection.slice(0, harness.rowCount)
+    const visible = visibleRowKeys(rows, viewport)
+
+    // A parent that owns at least one visible row, so discarding it destroys one.
+    const victim = rows.find(
+      (row) => row.index < 60 && row.kind === 'node' && row.parentId !== null,
+    )
+    if (victim === undefined || victim.kind !== 'node' || victim.parentId === null) {
+      throw new Error('no visible row with a node parent')
+    }
+    const parent: NodeId = victim.parentId
+    harness.coverage.invalidate(parent)
+    harness.projection.invalidate(parent)
+
     const violations = checkM1Invariants(
       withState(harness, {
-        viewport: { start: 0, end: 40, overscan: 20 },
-        evictedThisStep: [firstRow.id],
+        viewport,
+        evictedThisStep: [parent],
+        visibleBeforeEviction: visible,
       }),
     )
     expect(caught(violations, 'N3'), violations.join('; ')).toBe(true)
+  })
+
+  test('N3 stays silent when eviction discards only what is off screen', async () => {
+    // The other half. An invariant that fires on every eviction is not an invariant,
+    // and the design specifically permits shedding a subtree below the window.
+    const harness = await seed()
+    const viewport = { start: 0, end: 4, overscan: 0 }
+
+    // Open a node sitting below the window, so its children are all below it too.
+    // Picking any parent that already has rows would not do: the root owns rows 1
+    // to 3, which are on screen, and discarding it is a genuine N3 breach.
+    const candidate = harness.projection
+      .slice(0, harness.rowCount)
+      .find(
+        (row) =>
+          row.index >= 4 && row.kind === 'node' && harness.coverage.get(row.id) !== undefined,
+      )
+    if (candidate === undefined || candidate.kind !== 'node') throw new Error('no node below 4')
+    const parent: NodeId = candidate.id
+    harness.projection.expand(parent)
+    harness.request(parent, 0, 100)
+    await harness.settle('inOrder')
+
+    const rows = harness.projection.slice(0, harness.rowCount)
+    const visible = visibleRowKeys(rows, viewport)
+    if (!rows.some((row) => row.kind === 'node' && row.parentId === parent)) {
+      throw new Error('the chosen parent contributed no rows, so nothing would be evicted')
+    }
+    harness.coverage.invalidate(parent)
+    harness.projection.invalidate(parent)
+
+    const violations = checkM1Invariants(
+      withState(harness, {
+        viewport,
+        evictedThisStep: [parent],
+        visibleBeforeEviction: visible,
+      }),
+    )
+    expect(caught(violations, 'N3'), violations.join('; ')).toBe(false)
   })
 
   test('N4 detects a fabricated page the coverage store had no way to reject', async () => {
@@ -217,7 +274,6 @@ describe('what the traces actually reach', () => {
       }
     }
 
-    // eslint-disable-next-line no-console
     console.log('\ntrace coverage:', JSON.stringify(reached, null, 2))
 
     expect(reached.pagesApplied, 'no pages were ever applied').toBeGreaterThan(50)

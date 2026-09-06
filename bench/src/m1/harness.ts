@@ -13,6 +13,7 @@ import type { MapTreeStore } from '@understory/core'
 import {
   checkM1Invariants,
   fingerprint,
+  visibleRowKeys,
   type M1State,
   type Viewport,
   type Violation,
@@ -35,6 +36,18 @@ export type Step =
   | { readonly op: 'expand'; readonly id: NodeId }
   | { readonly op: 'collapse'; readonly id: NodeId }
   | { readonly op: 'viewport'; readonly start: number; readonly end: number }
+  /**
+   * Drag to the bottom of whatever is currently projected.
+   *
+   * The only step whose target is computed at run time, and it earns that because
+   * W7 needs it. A scripted `viewport` past the end of the rows lands on nothing,
+   * demand stops, and coverage never accumulates; on `deep-narrow`, where rows grow
+   * only as the chain deepens, a fixed scroll schedule cannot reach the append
+   * point at all and W7 would quietly measure nothing. This is a reader dragging
+   * the scrollbar to the end, which is also the fastest way to accumulate coverage
+   * under D2.
+   */
+  | { readonly op: 'scrollToEnd' }
   | {
       readonly op: 'request'
       readonly parentId: NodeId | null
@@ -83,6 +96,7 @@ export class Harness {
   private readonly budget: number
   private outstanding: Outstanding[] = []
   private evictedThisStep: (NodeId | null)[] = []
+  private visibleBeforeEviction: ReadonlySet<string> | undefined
   private previousLoaded = new Map<NodeId | null, number>()
   /** Whether the last sweep could not reach the budget. See `state()`. */
   private lastSweepStuck = false
@@ -166,6 +180,9 @@ export class Harness {
     return Math.abs(this.rng)
   }
 
+  /** Parents discarded by every sweep so far. Reachability evidence for A7. */
+  evictionCount = 0
+
   /** Whether the last sweep could not reach the budget. */
   get stuck(): boolean {
     return this.lastSweepStuck
@@ -202,6 +219,9 @@ export class Harness {
       inFlight: this.loader?.inFlight() ?? this.outstanding.map((o) => o.key),
       evictedThisStep: this.evictedThisStep,
       previousLoaded: this.previousLoaded,
+      ...(this.visibleBeforeEviction === undefined
+        ? {}
+        : { visibleBeforeEviction: this.visibleBeforeEviction }),
     }
   }
 
@@ -214,6 +234,7 @@ export class Harness {
       ),
     ])
     this.evictedThisStep = []
+    this.visibleBeforeEviction = undefined
     return violations
   }
 
@@ -306,6 +327,13 @@ export class Harness {
         this.viewportState = { ...this.viewportState, start: step.start, end: step.end }
         this.syncViewport()
         break
+      case 'scrollToEnd': {
+        const height = this.viewportState.end - this.viewportState.start
+        const end = Math.max(height, this.rowCount)
+        this.viewportState = { ...this.viewportState, start: end - height, end }
+        this.syncViewport()
+        break
+      }
       case 'load':
         await this.drive('inOrder')
         break
@@ -330,12 +358,19 @@ export class Harness {
    */
   private sweep(): void {
     if (this.evictor === undefined) return
+    // Captured before the sweep: eviction removes the rows that would prove a
+    // breach, so N3 cannot be evaluated on the state a sweep leaves behind.
+    this.visibleBeforeEviction = visibleRowKeys(
+      this.projection.slice(0, this.rowCount),
+      this.viewportState,
+    )
     const report = this.evictor.sweep({
       startIndex: this.viewportState.start,
       endIndex: this.viewportState.end,
       overscan: this.viewportState.overscan,
     })
     for (const id of report.evicted) this.evictedThisStep.push(id)
+    this.evictionCount += report.evicted.length
     this.lastSweepStuck = report.stuck
   }
 

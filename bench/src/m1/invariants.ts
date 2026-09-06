@@ -4,11 +4,15 @@ import {
   type CoverageStore,
   type NodeId,
   type Projection,
+  rowKey,
+  type Row,
 } from '@understory/core'
 import type { MapTreeStore } from '@understory/core'
 
 /**
- * The ten M1 invariants, N1 to N10, from docs/m1-definition.md §5.
+ * The M1 safety invariants N1 to N10, from docs/m1-definition.md §5. N11 is the
+ * one liveness property and is checked by a bounded-round settle instead; a
+ * state-inspection function cannot see a system that never progresses.
  *
  * **Independence.** These do not compare the implementation against itself. The
  * right-hand side is `truth`, the corpus the source is serving from, which says
@@ -49,9 +53,46 @@ export interface M1State {
   readonly evictedThisStep: readonly (NodeId | null)[]
   /** Loaded counts per parent as of the previous check, for N5. */
   readonly previousLoaded: ReadonlyMap<NodeId | null, number>
+  /**
+   * Keys of the rows inside the window immediately *before* this step's eviction.
+   *
+   * Required because eviction destroys the evidence: once a parent's coverage is
+   * gone its descendants are no longer rows, so nothing in the resulting state can
+   * say whether any of them were on screen. Omit it and N3 has nothing to check.
+   */
+  readonly visibleBeforeEviction?: ReadonlySet<string>
 }
 
 export type Violation = string
+/**
+ * The keys of the rows currently inside the protected window.
+ *
+ * N3 says "no row inside `[start - overscan, end + overscan)` is ever evicted", and
+ * this is that sentence made checkable: snapshot the visible rows before a sweep,
+ * and afterwards every one of them must still be a row.
+ *
+ * Two earlier formulations were both wrong, and how they were wrong is worth
+ * keeping. The first collected the *ids of visible rows* and forbade evicting them,
+ * which flags a parent sitting on screen whose children are all below the window,
+ * something the design explicitly permits and relies on. The second collected the
+ * *ancestors* of visible rows, which is precisely what `BudgetEvictor` computes for
+ * itself, so it could only ever disagree with the evictor about bookkeeping rather
+ * than about outcomes. Row survival names neither indices nor ancestry, so it stays
+ * meaningful while the index space shifts underneath a running sweep, which is the
+ * case that separates the three.
+ *
+ * Deliberately independent of `BudgetEvictor.protectedNow`. An invariant that asks
+ * an implementation what it protected cannot catch it protecting the wrong thing.
+ */
+export function visibleRowKeys(rows: readonly Row[], viewport: Viewport): ReadonlySet<string> {
+  const from = viewport.start - viewport.overscan
+  const to = viewport.end + viewport.overscan
+  const keys = new Set<string>()
+  for (const row of rows) {
+    if (row.index >= from && row.index < to) keys.add(rowKey(row))
+  }
+  return keys
+}
 
 const childrenIn = (truth: MapTreeStore, parentId: NodeId | null): readonly NodeId[] =>
   parentId === null ? truth.roots : (truth.get(parentId)?.childIds ?? [])
@@ -114,23 +155,14 @@ export function checkM1Invariants(state: M1State): Violation[] {
 
   // N3  nothing inside the protected window is evicted
   if (state.evictedThisStep.length > 0) {
-    const from = state.viewport.start - state.viewport.overscan
-    const to = state.viewport.end + state.viewport.overscan
-    const protectedIds = new Set<NodeId>()
-    let anythingVisible = false
-    for (const row of rows) {
-      if (row.index < from || row.index >= to) continue
-      anythingVisible = true
-      if (row.kind === 'node') protectedIds.add(row.id)
-    }
-    for (const evicted of state.evictedThisStep) {
-      // Discarding the roots destroys every row, so it is a violation whenever the
-      // window holds anything at all.
-      if (evicted === null ? anythingVisible : protectedIds.has(evicted)) {
-        violations.push(
-          `N3 viewport-protected: ${evicted ?? '<roots>'} was evicted while the window held rows`,
-        )
-        break
+    if (state.visibleBeforeEviction !== undefined) {
+      const surviving = new Set<string>()
+      for (const row of rows) surviving.add(rowKey(row))
+      for (const key of state.visibleBeforeEviction) {
+        if (!surviving.has(key)) {
+          violations.push(`N3 viewport-protected: row ${key} was inside the window and was evicted`)
+          break
+        }
       }
     }
   }

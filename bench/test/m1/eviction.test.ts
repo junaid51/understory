@@ -14,7 +14,7 @@ import {
 } from '@understory/core'
 import { afterEach, describe, expect, test } from 'vitest'
 import { generate } from '../../src/corpus.js'
-import { checkM1Invariants } from './invariants.js'
+import { checkM1Invariants } from '../../src/m1/invariants.js'
 
 /**
  * The budget under test is the pre-registered one, read from the committed

@@ -114,7 +114,6 @@ describe('fault injection', () => {
       const by = d.structural.size > 0 ? [...d.structural].sort().join(' ') : 'DIFFERENTIAL ONLY'
       lines.push(`${fault.padEnd(30)} ${String(d.runsCaught).padStart(3)}/${d.runsTotal}  ${by}`)
     }
-    // eslint-disable-next-line no-console
     console.log(lines.join('\n'))
     expect(results.size).toBe(FAULTS.length)
   })

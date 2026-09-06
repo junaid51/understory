@@ -10,9 +10,9 @@ import {
 } from '@understory/core'
 import { describe, expect, test } from 'vitest'
 import { SHAPES, generate } from '../../src/corpus.js'
-import { Harness, type SettleOrder } from './harness.js'
-import { checkM1Invariants } from './invariants.js'
-import { TRACE_NAMES, TRACES, demandDriven } from './traces.js'
+import { Harness, type SettleOrder } from '../../src/m1/harness.js'
+import { checkM1Invariants } from '../../src/m1/invariants.js'
+import { TRACE_NAMES, TRACES, demandDriven } from '../../src/m1/traces.js'
 
 const NODES = 4_000
 const ORDERS: SettleOrder[] = ['inOrder', 'reverse', 'shuffled']

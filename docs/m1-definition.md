@@ -398,3 +398,95 @@ for the commit 10 verdict.
 
 W7 reaches 3.2x the budget, so A1 is exercised rather than vacuous, and eviction
 restores the bound on every sweep.
+
+---
+
+## Addendum, M1 commit 9: measurement method and three definitional defects
+
+Recorded here because they change how §6 to §9 must be read. The measured results
+and the verdict are commit 10's subject, not this section's.
+
+### How latency is modelled
+
+A virtual clock, not `setTimeout`. Three latency profiles across the full matrix
+would spend hours inside the timer measuring the timer, and would not reproduce.
+What latency actually does to a loader is disperse arrivals, so arrival time is
+`now + latency ± 40% of latency`, seeded, and the clock advances to the newest
+delivery in each batch.
+
+The jitter is not a refinement. Without it every request in a round arrives at
+`now + latency` in issue order, all three profiles produce byte-identical state,
+and the whole dimension reports one measurement three times. `deliveryOrderDiverged`
+records whether reordering actually occurred, and a validity check asserts that it
+happens above 0ms and does not happen at 0ms.
+
+### Defect 1: §8's minimum is unreachable by any correct D2 engine
+
+§8 counts a page as necessary when one of its child slots was inside the window at
+some point. Two classes of request that no correct engine can avoid fall outside
+that definition.
+
+**Prefix closure.** Coverage is a loaded prefix, so page _k_ of a parent cannot be
+fetched without pages 0 to _k-1_. Where a trace jumps into the middle of a parent,
+§8 counts one page and the engine must fetch several.
+
+**Expansion.** Expanding a node makes its children rows, which shifts every row
+below them. The engine cannot know how far to shift without loading the first page,
+so an expansion forces a fetch whether or not anyone looks at the result.
+
+A3 and A4 are computed against §8 exactly as committed. Two diagnostics are
+reported beside them: `minimumPagesPrefixClosed`, and `minimumPagesAchievable`,
+which is the smallest count a correct D2 loader could reach given the same script.
+Substituting either for the committed definition would be amending a
+pre-registration after seeing that it is inconvenient.
+
+### Defect 2: A5 cannot be scoped by coverage generation
+
+A5 forbids duplicate requests. Eviction makes a page legitimately worth asking for
+twice, so the count has to be scoped to "since the last eviction", and the coverage
+generation looked like the natural key. It is not: `invalidate` bumps a parent's
+generation, but evicting an _ancestor_ deletes the parent's record outright and its
+replacement starts again at zero. That made 6,493 ordinary refetches on
+`sparse-unbalanced` indistinguishable from duplicate requests.
+
+Requests are therefore tagged with a monotonic eviction epoch. With eviction
+disabled no epoch ever advances, so A5 is the strict form there: zero repeats of any
+kind. Refetches across an eviction are reported separately and counted against
+amplification, which is where §8 puts them.
+
+### Defect 3: N3 was checking a property that is not N3
+
+N3 says no row inside the protected window is ever evicted. Two implementations
+were wrong before the third was right.
+
+Collecting the **ids of visible rows** and forbidding their eviction flags a parent
+sitting on screen whose children are all below the window, which the design
+explicitly permits and depends on. Collecting the **ancestors** of visible rows is
+what `BudgetEvictor` computes for itself, so the invariant could only ever disagree
+with the evictor about bookkeeping rather than about outcomes.
+
+N3 is now checked as **row survival**: snapshot the visible row keys before a sweep,
+and every one of them must still be a row afterwards. It names neither indices nor
+ancestry, so it stays meaningful while the index space shifts underneath a running
+sweep, which is the case that separates the three formulations.
+
+That case was not hypothetical. Under the corrected invariant, three workloads on
+two shapes reproduced a real defect in `BudgetEvictor`: protection was recomputed
+from scratch on each iteration of the sweep loop, so discarding one parent shifted
+the rows the reader was looking at out of the index window, and their ancestor then
+became an ordinary candidate. A sweep could destroy exactly what it had just
+protected. Fixed by holding the union of everything protected during a sweep, which
+can leave a sweep `stuck` where a more aggressive one would have succeeded. That is
+the intended trade: an over-budget state is visible through `stuck`, a destroyed
+viewport is not.
+
+### What A7 does not cover
+
+The committed rule names I1-I15 and N1-N11. The verdict tool checks N1-N11 across
+generated sequences; I1-I15 are gated by the core conformance suite under
+`npm run test:deep`, which the tool cannot read. A7 passing there is half of what
+A7 says, and the tool prints that in its own output rather than leaving it implied.
+
+Sequences run twice: once at `B`, and once at a budget they can actually reach. At
+`B` these sequences peak near 600 rows and eviction never fires, so N2, N3 and N10
+would pass without being asked anything. Violations from both passes count.
