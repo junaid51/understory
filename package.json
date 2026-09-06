@@ -4,25 +4,28 @@
   "type": "module",
   "workspaces": [
     "packages/*",
-    "bench"
+    "bench",
+    "demo"
   ],
   "engines": {
     "node": ">=20"
   },
   "scripts": {
-    "typecheck": "tsc --build --force",
-    "lint": "eslint .",
-    "format": "prettier --check .",
-    "test": "vitest run",
-    "test:deep": "UNDERSTORY_DEEP=1 vitest run",
     "bench": "NODE_OPTIONS='--expose-gc --max-old-space-size=8192' vite-node bench/src/run.ts",
-    "bench:verdict": "vite-node bench/src/verdict.ts",
-    "verify": "bash scripts/verify.sh",
-    "bench:report": "vite-node bench/src/report.ts",
     "bench:calibrate": "NODE_OPTIONS='--expose-gc --max-old-space-size=8192' vite-node bench/src/calibrate.ts",
     "bench:calibrate:report": "vite-node bench/src/calibration-report.ts",
     "bench:m1": "NODE_OPTIONS='--expose-gc --max-old-space-size=8192' vite-node bench/src/m1/run.ts",
-    "bench:m1:verdict": "vite-node bench/src/m1/verdict.ts"
+    "bench:m1:verdict": "vite-node bench/src/m1/verdict.ts",
+    "bench:report": "vite-node bench/src/report.ts",
+    "bench:verdict": "vite-node bench/src/verdict.ts",
+    "demo": "npm run dev --workspace @understory/demo",
+    "demo:build": "npm run build --workspace @understory/demo",
+    "format": "prettier --check .",
+    "lint": "eslint .",
+    "test": "vitest run",
+    "test:deep": "UNDERSTORY_DEEP=1 vitest run",
+    "typecheck": "tsc --build --force",
+    "verify": "bash scripts/verify.sh"
   },
   "devDependencies": {
     "@types/node": "^22.10.2",

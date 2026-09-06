@@ -6,5 +6,10 @@
   "license": "MIT",
   "dependencies": {
     "@understory/core": "*"
+  },
+  "exports": {
+    ".": "./src/index.ts",
+    "./m1": "./src/m1/index.ts",
+    "./corpus": "./src/corpus.ts"
   }
 }
