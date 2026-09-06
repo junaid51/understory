@@ -4,8 +4,14 @@ on:
   push: { branches: [main] }
   pull_request:
 
-# The bench and deep tiers arrive at commit 11. This is the fast tier only:
-# it must stay under three minutes or pull requests stop being reviewed promptly.
+# Two tiers. `verify` is typecheck, lint, format and the fast test tier, and must
+# stay under three minutes or pull requests stop being reviewed promptly. The deep
+# tier re-runs the property suites at 10,000 sequences against a fresh seed, which
+# is the tier that decides acceptance criterion A7.
+#
+# The benchmarks are not run here on purpose. A shared CI runner cannot produce a
+# p99 worth gating on, and the M0 and M1 verdicts were computed from committed
+# result files rather than from a run whose timings nobody can reproduce.
 jobs:
   fast:
     runs-on: ubuntu-latest
@@ -15,3 +21,12 @@ jobs:
         with: { node-version: '22', cache: 'npm' }
       - run: npm ci
       - run: npm run verify
+
+  deep:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: '22', cache: 'npm' }
+      - run: npm ci
+      - run: npm run test:deep
